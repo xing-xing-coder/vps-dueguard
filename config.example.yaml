@@ -1,0 +1,23 @@
+﻿providers:
+  - name: provider-a
+    base_url: https://provider-a.example/
+    username: your@email.com
+    password: your-password
+
+  - name: provider-b
+    base_url: https://provider-b.example/
+    username: your@email.com
+    password: your-password
+
+telegram:
+  bot_token: "123456:telegram-bot-token"
+  chat_id: "123456789"
+
+notifications:
+  renewal_days: [21, 14, 7, 3]
+  daily_report: true
+  state_file: ".vps_dueguard_state.json"
+
+sessions:
+  enabled: true
+  session_dir: ".vps_sessions"

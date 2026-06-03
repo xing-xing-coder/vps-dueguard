@@ -1,0 +1,14 @@
+.venv/
+config.yaml
+.vps_sessions/
+.vps_dueguard_state.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
