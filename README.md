@@ -95,6 +95,8 @@ vpsm
 
 For normal Linux deployment, `vpsm` is the main entry point. You do not need to remember Python commands.
 
+When `Install / Update VPS DueGuard` runs from a git checkout, the script asks whether to pull the latest code from GitHub before reinstalling into `/opt/vps-dueguard`. If the current source is not a git repository, it simply updates from the local files you are running.
+
 ## Menu Overview
 
 ```text
@@ -124,6 +126,8 @@ The menu supports:
 - enable or disable daily and renewal timers
 - view recent systemd logs
 - uninstall all project-owned files
+
+For updates, open the menu with `vpsm`, choose `Install / Update VPS DueGuard`, and answer `Y` when asked to pull the latest GitHub code.
 
 ## Provider Configuration
 

@@ -95,6 +95,8 @@ vpsm
 
 对于常规 Linux 部署，`vpsm` 是主要入口。日常使用不需要记 Python 命令。
 
+当从 git clone 的源码目录运行 `安装 / 更新 VPS DueGuard` 时，脚本会询问是否先从 GitHub 拉取最新代码，然后再重新安装到 `/opt/vps-dueguard`。如果当前来源不是 git 仓库，则会直接使用你正在运行的本地文件更新。
+
 ## 菜单概览
 
 ```text
@@ -124,6 +126,8 @@ VPS DueGuard 设置
 - 启用或禁用日报和续费提醒定时器
 - 查看最近的 systemd 日志
 - 卸载全部项目专属文件
+
+更新时，输入 `vpsm` 打开菜单，选择 `安装 / 更新 VPS DueGuard`，在询问是否拉取 GitHub 最新代码时输入 `Y` 即可。
 
 ## 服务商配置
 

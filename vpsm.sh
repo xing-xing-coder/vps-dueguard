@@ -221,7 +221,9 @@ install_or_update() {
     else
         was_installed=0
     fi
-    install_core
+    if ! install_core; then
+        return
+    fi
     repair_config || true
     if [ "$was_installed" -eq 0 ]; then
         first_run_wizard
@@ -241,6 +243,7 @@ is_installed() {
 install_core() {
     check_linux
     install_packages
+    maybe_update_source_from_git || return 1
     ensure_python_ready
     cleanup_shell_startup_traces
     copy_project
@@ -330,6 +333,7 @@ install_packages() {
         ca-certificates \
         curl \
         wget \
+        git \
         rsync \
         python3 \
         python3-venv \
@@ -624,7 +628,7 @@ install_python_from_source() {
 
 copy_project() {
     local source_dir source_real install_real
-    source_dir="$SOURCE_DIR"
+    source_dir="$(install_source_dir)"
     source_real="$(readlink -f "$source_dir" 2>/dev/null || true)"
     install_real="$(readlink -f "$INSTALL_DIR" 2>/dev/null || true)"
     if [ -n "$source_real" ] && [ "$source_real" = "$install_real" ]; then
@@ -640,6 +644,54 @@ copy_project() {
         --exclude "config.yaml" \
         "$source_dir/" "$INSTALL_DIR/"
     printf "%s\n" "$source_dir" > "$INSTALL_DIR/.source_dir"
+}
+
+maybe_update_source_from_git() {
+    local source_dir answer
+    source_dir="$(install_source_dir)"
+    if [ ! -d "$source_dir/.git" ]; then
+        echo "$(prompt git_not_available_for_update)"
+        return 0
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        echo "$(prompt git_command_missing)"
+        return 0
+    fi
+    echo "$(prompt git_update_source) $source_dir"
+    read_input "$(prompt git_pull_question)" answer
+    if is_no "$answer"; then
+        echo "$(prompt git_pull_skipped)"
+        return 0
+    fi
+    if git -C "$source_dir" pull --ff-only; then
+        echo "$(prompt git_pull_done)"
+    else
+        echo "$(prompt git_pull_failed)"
+        read_input "$(prompt continue_with_local_source)" answer
+        if is_no "$answer" || [ -z "$answer" ]; then
+            echo "$(prompt install_update_cancelled)"
+            return 1
+        fi
+    fi
+}
+
+install_source_dir() {
+    local source_real install_real original original_real
+    source_real="$(readlink -f "$SOURCE_DIR" 2>/dev/null || true)"
+    install_real="$(readlink -f "$INSTALL_DIR" 2>/dev/null || true)"
+    if [ -n "$source_real" ] && [ "$source_real" = "$install_real" ]; then
+        if [ -d "$SOURCE_DIR/.git" ]; then
+            printf "%s" "$SOURCE_DIR"
+            return
+        fi
+        original="$(original_source_dir)"
+        original_real="$(readlink -f "$original" 2>/dev/null || true)"
+        if [ -n "$original_real" ] && source_dir_has_project_markers "$original_real"; then
+            printf "%s" "$original_real"
+            return
+        fi
+    fi
+    printf "%s" "$SOURCE_DIR"
 }
 
 create_venv() {
@@ -799,14 +851,18 @@ list_providers() {
 }
 
 add_provider() {
-    local provider_yaml existing_yaml
-    provider_yaml="$(collect_provider_entry)"
-    if [ -z "$provider_yaml" ]; then
+    ensure_installed || return
+    local name base_url username password
+    read_input "$(prompt provider_name_required)" name
+    if [ -z "$name" ]; then
         pause "$(prompt no_providers)"
         return
     fi
-    existing_yaml="$(read_providers_yaml)"
-    if ! save_config "${existing_yaml}${provider_yaml}" "$(read_config_value telegram.bot_token)" "$(read_config_value telegram.chat_id)" "$(read_renewal_days)"; then
+    read_input "$(prompt base_url)" base_url
+    read_input "$(prompt username)" username
+    read_input "$(prompt password)" password
+    if ! add_provider_config "$name" "$base_url" "$username" "$password"; then
+        pause "$(prompt config_save_failed)"
         return 0
     fi
     pause "$(prompt providers_saved)"
@@ -920,7 +976,8 @@ edit_telegram_config() {
     read_input "$(prompt chat_id)" chat_id
     read_renewal_days_prompt days
     [ -n "$days" ] || return 0
-    if ! save_config "$(read_providers_yaml)" "$bot_token" "$chat_id" "$days"; then
+    if ! set_telegram_config "$bot_token" "$chat_id" "$days"; then
+        pause "$(prompt config_save_failed)"
         return 0
     fi
     pause "$(prompt telegram_saved)"
@@ -931,7 +988,8 @@ edit_renewal_days() {
     local days
     read_renewal_days_prompt days
     [ -n "$days" ] || return 0
-    if ! save_config "$(read_providers_yaml)" "$(read_config_value telegram.bot_token)" "$(read_config_value telegram.chat_id)" "$days"; then
+    if ! set_renewal_days_config "$days"; then
+        pause "$(prompt config_save_failed)"
         return 0
     fi
     pause "$(prompt telegram_saved)"
@@ -1255,11 +1313,51 @@ save_config() {
     return 1
 }
 
+add_provider_config() {
+    local name="$1"
+    local base_url="$2"
+    local username="$3"
+    local password="$4"
+    name="$(clean_control_chars "$name")"
+    base_url="$(clean_control_chars "$base_url")"
+    username="$(clean_control_chars "$username")"
+    password="$(clean_control_chars "$password")"
+    config_python add-provider "$name" "$base_url" "$username" "$password"
+    chmod 600 "$CONFIG_FILE"
+}
+
+set_telegram_config() {
+    local bot_token="$1"
+    local chat_id="$2"
+    local renewal_days="$3"
+    bot_token="$(clean_control_chars "$bot_token")"
+    chat_id="$(clean_control_chars "$chat_id")"
+    renewal_days="$(normalize_renewal_days_input "$renewal_days")"
+    if [ -z "$renewal_days" ]; then
+        echo "$(prompt invalid_renewal_days)"
+        return 1
+    fi
+    config_python set-telegram "$bot_token" "$chat_id" "$renewal_days"
+    chmod 600 "$CONFIG_FILE"
+}
+
+set_renewal_days_config() {
+    local renewal_days="$1"
+    renewal_days="$(normalize_renewal_days_input "$renewal_days")"
+    if [ -z "$renewal_days" ]; then
+        echo "$(prompt invalid_renewal_days)"
+        return 1
+    fi
+    config_python set-renewal-days "$renewal_days"
+    chmod 600 "$CONFIG_FILE"
+}
+
 repair_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
         return 0
     fi
-    write_config "$(read_providers_yaml)" "$(read_config_value telegram.bot_token)" "$(read_config_value telegram.chat_id)" "$(read_renewal_days)"
+    config_python repair
+    chmod 600 "$CONFIG_FILE"
 }
 
 provider_count() {
@@ -1439,6 +1537,24 @@ prompt() {
         en:systemd_required) printf "systemd is required." ;;
         zh:installing_packages) printf "正在安装系统依赖..." ;;
         en:installing_packages) printf "Installing system packages..." ;;
+        zh:git_not_available_for_update) printf "当前安装来源不是 git 仓库，跳过在线拉取；将使用本地脚本文件安装/更新。" ;;
+        en:git_not_available_for_update) printf "Install source is not a git repository. Skipping online pull and using local files." ;;
+        zh:git_command_missing) printf "未找到 git，跳过在线拉取；将使用本地脚本文件安装/更新。" ;;
+        en:git_command_missing) printf "git was not found. Skipping online pull and using local files." ;;
+        zh:git_update_source) printf "检测到 git 源码目录:" ;;
+        en:git_update_source) printf "Detected git source directory:" ;;
+        zh:git_pull_question) printf "是否先从 GitHub 拉取最新代码？[Y/n]: " ;;
+        en:git_pull_question) printf "Pull the latest code from GitHub first? [Y/n]: " ;;
+        zh:git_pull_skipped) printf "已跳过 git pull，继续使用本地文件。" ;;
+        en:git_pull_skipped) printf "Skipped git pull. Continuing with local files." ;;
+        zh:git_pull_done) printf "GitHub 更新完成。" ;;
+        en:git_pull_done) printf "GitHub update complete." ;;
+        zh:git_pull_failed) printf "git pull 失败，可能是网络问题、本地有未提交修改，或远程历史无法快进。" ;;
+        en:git_pull_failed) printf "git pull failed. This may be caused by network issues, local changes, or a non-fast-forward remote history." ;;
+        zh:continue_with_local_source) printf "是否继续使用当前本地文件安装/更新？[y/N]: " ;;
+        en:continue_with_local_source) printf "Continue installing/updating with current local files? [y/N]: " ;;
+        zh:install_update_cancelled) printf "已取消本次安装/更新。" ;;
+        en:install_update_cancelled) printf "Install/update cancelled." ;;
         zh:creating_venv) printf "正在创建 Python 虚拟环境..." ;;
         en:creating_venv) printf "Creating Python virtual environment..." ;;
         zh:python_selected) printf "使用 Python:" ;;
@@ -1477,6 +1593,8 @@ prompt() {
         en:configure_providers_intro) printf "Rewrite all providers. Existing providers will be replaced." ;;
         zh:provider_name) printf "服务商名称，例如 provider-a（留空结束）: " ;;
         en:provider_name) printf "Provider name, e.g. provider-a (blank to finish): " ;;
+        zh:provider_name_required) printf "服务商名称，例如 provider-a: " ;;
+        en:provider_name_required) printf "Provider name, e.g. provider-a: " ;;
         zh:provider_name_short) printf "服务商名称: " ;;
         en:provider_name_short) printf "Provider name: " ;;
         zh:add_another_provider) printf "继续添加下一个服务商？[y/N]: " ;;
