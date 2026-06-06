@@ -215,11 +215,16 @@ EOF_MENU
 }
 
 install_or_update() {
-    local was_installed
+    local was_installed bot_was_active
     if is_installed; then
         was_installed=1
     else
         was_installed=0
+    fi
+    if systemctl is-active --quiet vps-dueguard-bot.service 2>/dev/null; then
+        bot_was_active=1
+    else
+        bot_was_active=0
     fi
     if ! install_core; then
         return
@@ -228,6 +233,9 @@ install_or_update() {
     if [ "$was_installed" -eq 0 ]; then
         first_run_wizard
     else
+        if [ "$bot_was_active" -eq 1 ]; then
+            systemctl restart vps-dueguard-bot.service || true
+        fi
         if [ "$LANG_CHOICE" = "zh" ]; then
             pause "更新/修复完成。配置已保留。输入 vpsm 可随时回到管理界面。"
         else

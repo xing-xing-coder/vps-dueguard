@@ -77,12 +77,23 @@ VPS DueGuard 当前主要面向 WHMCS/Lagom 类客户区。
 
 ## 快速开始
 
-在 Debian 或 Ubuntu 上执行：
+在 Debian 或 Ubuntu 上，先下载源码：
 
 ```bash
 git clone https://github.com/xing-xing-coder/vps-dueguard.git
 cd vps-dueguard
+```
+
+如果你平时登录的是普通用户，执行：
+
+```bash
 sudo bash vpsm.sh
+```
+
+如果你已经是 `root` 用户，执行：
+
+```bash
+bash vpsm.sh
 ```
 
 脚本会打开双语菜单。选择语言后，按步骤安装程序、添加服务商、测试查询、配置 Telegram 并启用服务。
@@ -95,7 +106,7 @@ vpsm
 
 对于常规 Linux 部署，`vpsm` 是主要入口。日常使用不需要记 Python 命令。
 
-当从 git clone 的源码目录运行 `安装 / 更新 VPS DueGuard` 时，脚本会询问是否先从 GitHub 拉取最新代码，然后再重新安装到 `/opt/vps-dueguard`。如果当前来源不是 git 仓库，则会直接使用你正在运行的本地文件更新。
+当从 git clone 的源码目录运行 `安装 / 更新 VPS DueGuard` 时，脚本会询问是否先从 GitHub 拉取最新代码，然后再重新安装到 `/opt/vps-dueguard`。如果 Telegram Bot 服务原本正在运行，更新完成后会自动重启 Bot，让新代码立即生效。如果当前来源不是 git 仓库，则会直接使用你正在运行的本地文件更新。
 
 ## 菜单概览
 

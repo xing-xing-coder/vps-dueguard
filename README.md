@@ -77,12 +77,23 @@ If a panel does not expose traffic information, the service is still included an
 
 ## Quick Start
 
-On Debian or Ubuntu:
+On Debian or Ubuntu, download the source first:
 
 ```bash
 git clone https://github.com/xing-xing-coder/vps-dueguard.git
 cd vps-dueguard
+```
+
+If you normally log in as a regular user, run:
+
+```bash
 sudo bash vpsm.sh
+```
+
+If you are already `root`, run:
+
+```bash
+bash vpsm.sh
 ```
 
 The script opens a bilingual menu. Choose a language, install the app, add providers, test queries, configure Telegram, and enable services.
@@ -95,7 +106,7 @@ vpsm
 
 For normal Linux deployment, `vpsm` is the main entry point. You do not need to remember Python commands.
 
-When `Install / Update VPS DueGuard` runs from a git checkout, the script asks whether to pull the latest code from GitHub before reinstalling into `/opt/vps-dueguard`. If the current source is not a git repository, it simply updates from the local files you are running.
+When `Install / Update VPS DueGuard` runs from a git checkout, the script asks whether to pull the latest code from GitHub before reinstalling into `/opt/vps-dueguard`. If the Telegram Bot service was already running, the updater restarts it automatically so the new code takes effect immediately. If the current source is not a git repository, it simply updates from the local files you are running.
 
 ## Menu Overview
 
