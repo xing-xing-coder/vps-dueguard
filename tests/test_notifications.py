@@ -71,6 +71,28 @@ def test_renewal_alerts_deduplicate(tmp_path) -> None:
     assert second == []
 
 
+def test_renewal_alerts_escape_dynamic_html(tmp_path) -> None:
+    state_file = tmp_path / "state.json"
+    services = [
+        ServiceInfo(
+            provider="provider-<a>",
+            service_name="Tokyo & Osaka VPS",
+            status="Active",
+            expires_at="2026-06-16",
+            traffic_usage="20 GB < 1 TB",
+            traffic_remaining="1004 GB & counting",
+            detail_url="https://example.com/service",
+        )
+    ]
+
+    alerts = build_renewal_alerts(services, [14], state_file, today=date(2026, 6, 2))
+
+    assert "provider-&lt;a&gt;" in alerts[0]
+    assert "Tokyo &amp; Osaka VPS" in alerts[0]
+    assert "20 GB &lt; 1 TB" in alerts[0]
+    assert "1004 GB &amp; counting" in alerts[0]
+
+
 def test_renewal_alerts_trigger_inside_threshold_window(tmp_path) -> None:
     state_file = tmp_path / "state.json"
     services = [service("2026-06-23")]
@@ -108,11 +130,40 @@ def test_unknown_expiry_skips_renewal_alert(tmp_path) -> None:
 def test_format_reports() -> None:
     services = [service()]
 
-    assert "VPS Summary" in format_summary(services)
-    assert "expires 2026-06-16" in format_summary(services)
-    assert "VPS Traffic" in format_traffic_report(services)
+    assert "<b>VPS Summary</b>" in format_summary(services)
+    assert "Expires: 2026-06-16" in format_summary(services)
+    assert "<b>VPS Traffic</b>" in format_traffic_report(services)
     assert "1004.00 GB" in format_traffic_report(services)
-    assert "VPS Renewals" in format_renewals_report(services, today=date(2026, 6, 2))
+    assert "<b>VPS Renewals</b>" in format_renewals_report(services, today=date(2026, 6, 2))
+    assert "Days left: <b>14</b>" in format_renewals_report(services, today=date(2026, 6, 2))
+
+
+def test_renewals_report_skips_unknown_dates() -> None:
+    services = [service("unknown"), service("2026-06-16")]
+    report = format_renewals_report(services, today=date(2026, 6, 2))
+
+    assert "Days left: <b>14</b>" in report
+    assert "unknown" not in report
+
+
+def test_format_reports_escape_dynamic_html() -> None:
+    services = [
+        ServiceInfo(
+            provider="provider-<a>",
+            service_name="Tokyo & Osaka VPS",
+            status="Active",
+            expires_at="2026-06-16",
+            traffic_usage="20 GB < 1 TB",
+            traffic_remaining="1004 GB & counting",
+            detail_url="https://example.com/service",
+        )
+    ]
+    summary = format_summary(services, ["provider-a: bad <token> & retry"])
+
+    assert "provider-&lt;a&gt;" in summary
+    assert "Tokyo &amp; Osaka VPS" in summary
+    assert "20 GB &lt; 1 TB" in summary
+    assert "bad &lt;token&gt; &amp; retry" in summary
 
 
 def test_format_reports_show_provider_errors_prominently() -> None:
@@ -121,12 +172,12 @@ def test_format_reports_show_provider_errors_prominently() -> None:
     renewals = format_renewals_report([], ["provider-a: login failed"], today=date(2026, 6, 2))
 
     assert "No active services were loaded." in summary
-    assert "Provider errors:" in summary
+    assert "<b>Provider errors</b>" in summary
     assert "- provider-a: login failed" in summary
     assert "No traffic data was loaded." in traffic
-    assert "Provider errors:" in traffic
+    assert "<b>Provider errors</b>" in traffic
     assert "No renewal dates were loaded." in renewals
-    assert "Provider errors:" in renewals
+    assert "<b>Provider errors</b>" in renewals
 
 
 def test_telegram_send_message_payload(monkeypatch) -> None:
@@ -168,6 +219,7 @@ def test_telegram_send_message_payload(monkeypatch) -> None:
     assert requests[0][0] == "https://api.telegram.org/bottoken/sendMessage"
     assert requests[0][1]["chat_id"] == "123"
     assert requests[0][1]["text"] == "hello"
+    assert requests[0][1]["parse_mode"] == "HTML"
 
 
 def test_telegram_set_commands_payload(monkeypatch) -> None:
@@ -291,7 +343,7 @@ def test_provider_command_unknown_provider_reports_error() -> None:
 
     assert "Unknown provider 'missing'" in reply
     assert "Known providers: provider-a" in reply
-    assert "Provider errors:" in reply
+    assert "<b>Provider errors</b>" in reply
 
 
 def test_bot_cache_and_refresh(monkeypatch) -> None:
@@ -568,4 +620,4 @@ def test_run_bot_replies_to_command_errors(monkeypatch) -> None:
 
     run_bot(config, stop_after=lambda: bool(replies))
 
-    assert replies == [("Error: boom", "123")]
+    assert replies == [("<b>Error:</b> boom", "123")]
