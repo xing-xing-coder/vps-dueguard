@@ -22,7 +22,7 @@ RENEWALS_SERVICE="/etc/systemd/system/vps-dueguard-renewals.service"
 RENEWALS_TIMER="/etc/systemd/system/vps-dueguard-renewals.timer"
 
 MIN_PYTHON_MAJOR=3
-MIN_PYTHON_MINOR=9
+MIN_PYTHON_MINOR=10
 UV_PYTHON_VERSION="3.11"
 PREFERRED_PYTHON_SOURCE_VERSION="3.11.9"
 PYTHON_BIN=""
@@ -362,12 +362,10 @@ select_python() {
         python3.12
         python3.11
         python3.10
-        python3.9
         python3
         /usr/local/bin/python3.12
         /usr/local/bin/python3.11
         /usr/local/bin/python3.10
-        /usr/local/bin/python3.9
         /opt/python-${PREFERRED_PYTHON_SOURCE_VERSION}/bin/python3.11
     )
     local uv_python
@@ -494,7 +492,7 @@ package_available() {
 install_python_from_apt() {
     local version package venv_package
     apt-get update
-    for version in 3.12 3.11 3.10 3.9; do
+    for version in 3.12 3.11 3.10; do
         package="python${version}"
         venv_package="python${version}-venv"
         if package_available "$package" && package_available "$venv_package"; then
@@ -1571,8 +1569,8 @@ prompt() {
         en:python_not_found) printf "python3 not found" ;;
         zh:confirm_python_upgrade) printf "是否现在安装/更新一个用于本项目的 Python 运行时？[y/N]: " ;;
         en:confirm_python_upgrade) printf "Install/upgrade a Python runtime for this project now? [y/N]: " ;;
-        zh:python_upgrade_cancelled) printf "已取消。请先安装 Python 3.9+ 后再运行安装。" ;;
-        en:python_upgrade_cancelled) printf "Cancelled. Please install Python 3.9+ and run the installer again." ;;
+        zh:python_upgrade_cancelled) printf "已取消。请先安装 Python 3.10+ 后再运行安装。" ;;
+        en:python_upgrade_cancelled) printf "Cancelled. Please install Python 3.10+ and run the installer again." ;;
         zh:trying_install_python_from_apt) printf "正在尝试从系统软件源安装新版 Python..." ;;
         en:trying_install_python_from_apt) printf "Trying to install a newer Python from system repositories..." ;;
         zh:installing_python_package) printf "正在安装 Python 包:" ;;
