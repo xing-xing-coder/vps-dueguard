@@ -5,6 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from html import escape as html_escape
 from pathlib import Path
 from typing import Callable
 
@@ -49,6 +50,7 @@ class TelegramBot:
             json={
                 "chat_id": chat_id or self.config.chat_id,
                 "text": text,
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             },
         )
@@ -119,47 +121,55 @@ def normalize_service_dates(services: list[ServiceInfo]) -> list[ServiceInfo]:
 
 
 def format_summary(services: list[ServiceInfo], errors: list[str] | None = None) -> str:
-    lines = ["VPS Summary"]
+    lines = ["<b>VPS Summary</b>"]
     if services:
         for service in services:
-            lines.append(_service_line(service, include_traffic=True, include_expiry=True))
+            lines.extend(_service_block(service, include_traffic=True, include_expiry=True))
     elif errors:
-        lines.append("No active services were loaded.")
+        lines.extend(["", "No active services were loaded."])
     else:
-        lines.append("No active services found.")
+        lines.extend(["", "No active services found."])
     lines.extend(_error_lines(errors))
-    return "\n".join(lines)
+    return _join_lines(lines)
 
 
 def format_traffic_report(services: list[ServiceInfo], errors: list[str] | None = None) -> str:
-    lines = ["VPS Traffic"]
+    lines = ["<b>VPS Traffic</b>"]
     if services:
         for service in services:
-            lines.append(_service_line(service, include_traffic=True, include_expiry=False))
+            lines.extend(_service_block(service, include_traffic=True, include_expiry=False))
     elif errors:
-        lines.append("No traffic data was loaded.")
+        lines.extend(["", "No traffic data was loaded."])
     else:
-        lines.append("No active services found.")
+        lines.extend(["", "No active services found."])
     lines.extend(_error_lines(errors))
-    return "\n".join(lines)
+    return _join_lines(lines)
 
 
 def format_renewals_report(services: list[ServiceInfo], errors: list[str] | None = None, today: date | None = None) -> str:
     today = today or date.today()
-    lines = ["VPS Renewals"]
+    lines = ["<b>VPS Renewals</b>"]
     dated = [(service, parse_service_date(service.expires_at)) for service in services]
     dated = [(service, expires_at) for service, expires_at in dated if expires_at is not None]
     dated.sort(key=lambda item: item[1])
     if dated:
+        lines.append("")
         for service, expires_at in dated:
             days = (expires_at - today).days
-            lines.append(f"- {service.provider} | {service.service_name} | {expires_at.isoformat()} | {days} days")
+            lines.extend(
+                [
+                    f"<b>{_html(service.provider)}</b> - {_html(service.service_name)}",
+                    f"Expires: {_html(expires_at.isoformat())}",
+                    f"Days left: <b>{days}</b>",
+                    "",
+                ]
+            )
     elif errors:
-        lines.append("No renewal dates were loaded.")
+        lines.extend(["", "No renewal dates were loaded."])
     else:
-        lines.append("No services with known renewal dates found.")
+        lines.extend(["", "No services with known renewal dates found."])
     lines.extend(_error_lines(errors))
-    return "\n".join(lines)
+    return _join_lines(lines)
 
 
 def build_renewal_alerts(
@@ -190,10 +200,10 @@ def build_renewal_alerts(
             continue
         sent.add(key)
         alerts.append(
-            "Renewal Reminder\n"
-            f"{service.provider} | {service.service_name}\n"
-            f"Expires: {expires_at.isoformat()} ({days_left} days left)\n"
-            f"Traffic: {service.traffic_usage}, remaining {service.traffic_remaining}"
+            "<b>Renewal Reminder</b>\n"
+            f"{_html(service.provider)} - {_html(service.service_name)}\n"
+            f"Expires: {_html(expires_at.isoformat())} ({days_left} days left)\n"
+            f"Traffic: {_html(service.traffic_usage)}, remaining {_html(service.traffic_remaining)}"
         )
 
     state["sent_renewals"] = sorted(sent)
@@ -255,7 +265,7 @@ def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | No
 
     if name in {"/help", "/start"}:
         return (
-            "Commands:\n"
+            "<b>Commands</b>\n"
             "/summary - all active VPS services\n"
             "/traffic - traffic usage and remaining traffic\n"
             "/renewals - renewal dates and days left\n"
@@ -266,7 +276,7 @@ def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | No
         return "Unknown command. Send /help for available commands."
     if not config.providers:
         return (
-            "No providers configured.\n"
+            "<b>No providers configured.</b>\n"
             "Run vpsm, open provider management, add at least one provider, then send /refresh."
         )
 
@@ -354,7 +364,7 @@ def run_bot(
                         continue
                     reply = handle_bot_command(text, app_config, cache)
                 except Exception as exc:
-                    reply = f"Error: {exc}"
+                    reply = _runtime_error(exc)
                 try:
                     bot.send_message(reply, chat_id=chat_id)
                 except Exception:
@@ -363,19 +373,40 @@ def run_bot(
                 time.sleep(1)
 
 
-def _service_line(service: ServiceInfo, include_traffic: bool, include_expiry: bool) -> str:
-    parts = [f"- {service.provider}", service.service_name]
+def _service_block(service: ServiceInfo, include_traffic: bool, include_expiry: bool) -> list[str]:
+    lines = [
+        "",
+        f"<b>{_html(service.provider)}</b> - {_html(service.service_name)}",
+        f"Status: {_html(service.status)}",
+    ]
     if include_expiry:
-        parts.append(f"expires {format_service_date(service.expires_at)}")
+        lines.append(f"Expires: {_html(format_service_date(service.expires_at))}")
     if include_traffic:
-        parts.append(f"traffic {service.traffic_usage}, remaining {service.traffic_remaining}")
-    return " | ".join(parts)
+        lines.append(f"Traffic: {_html(service.traffic_usage)}")
+        lines.append(f"Remaining: {_html(service.traffic_remaining)}")
+    return lines
 
 
 def _error_lines(errors: list[str] | None) -> list[str]:
     if not errors:
         return []
-    return ["Provider errors:"] + [f"- {error}" for error in errors]
+    lines = ["", "<b>Provider errors</b>"]
+    lines.extend(f"- {_html(error)}" for error in errors)
+    return lines
+
+
+def _runtime_error(exc: Exception) -> str:
+    return f"<b>Error:</b> {_html(exc)}"
+
+
+def _html(value: object) -> str:
+    return html_escape(str(value), quote=False)
+
+
+def _join_lines(lines: list[str]) -> str:
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _renewal_key(service: ServiceInfo, expires_at: date, threshold: int) -> str:
