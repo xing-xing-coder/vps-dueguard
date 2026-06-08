@@ -348,6 +348,8 @@ def test_bot_static_commands() -> None:
     assert "/summary" in handle_bot_command("/help", config)
     assert "/summary" in handle_bot_command("/start", config)
     assert "/providers" in handle_bot_command("/help", config)
+    assert "/provider &lt;name&gt;" in handle_bot_command("/start", config)
+    assert "/provider <name>" not in handle_bot_command("/start", config)
     assert "Unknown command" in handle_bot_command("/wat", config)
 
 

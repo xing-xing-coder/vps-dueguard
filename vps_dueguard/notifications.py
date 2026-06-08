@@ -193,7 +193,7 @@ def format_help() -> str:
         "/traffic - traffic usage and remaining traffic\n"
         "/renewals - renewal dates and days left\n"
         "/providers - list configured providers\n"
-        "/provider <name> - query one provider\n"
+        "/provider &lt;name&gt; - query one provider\n"
         "/refresh - refresh cached VPS data"
     )
 
