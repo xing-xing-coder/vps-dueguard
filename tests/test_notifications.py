@@ -1086,3 +1086,85 @@ def test_run_bot_suppresses_duplicate_callback_clicks(monkeypatch) -> None:
         "<b>Querying</b>\nFetching VPS data. Please wait.",
         "final result",
     ]
+
+
+def test_run_bot_ignores_expired_duplicate_callback_ack(monkeypatch) -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+    calls = []
+    sent = []
+    answered = []
+    updates_seen = {"done": False}
+
+    class FakeBot:
+        def __init__(self, telegram) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def set_commands(self) -> None:
+            pass
+
+        def get_updates(self, offset=None, timeout=30):
+            updates_seen["done"] = True
+            return [
+                {
+                    "update_id": 1,
+                    "callback_query": {
+                        "id": "cb-1",
+                        "message": {"chat": {"id": 123}},
+                        "data": "cmd:summary",
+                    },
+                },
+                {
+                    "update_id": 2,
+                    "callback_query": {
+                        "id": "cb-2",
+                        "message": {"chat": {"id": 123}},
+                        "data": "cmd:summary",
+                    },
+                },
+            ]
+
+        def answer_callback_query(self, callback_query_id, text=None):
+            answered.append((callback_query_id, text))
+            if callback_query_id == "cb-2":
+                raise httpx.HTTPStatusError("400 Bad Request", request=httpx.Request("POST", "https://example.test"), response=httpx.Response(400))
+
+        def send_message(self, text, chat_id=None, reply_markup=None):
+            sent.append((text, chat_id, reply_markup))
+
+    def fake_handle_bot_callback(data, _config, _cache):
+        calls.append(data)
+        return "final result", None
+
+    monkeypatch.setattr("vps_dueguard.notifications.TelegramBot", FakeBot)
+    monkeypatch.setattr("vps_dueguard.notifications.handle_bot_callback", fake_handle_bot_callback)
+
+    run_bot(config, stop_after=lambda: updates_seen["done"])
+
+    assert calls == ["cmd:summary"]
+    assert answered == [
+        ("cb-1", "Querying, please wait..."),
+        ("cb-2", "Request already received. Please wait."),
+    ]
+    assert [message[0] for message in sent] == [
+        "<b>Querying</b>\nFetching VPS data. Please wait.",
+        "final result",
+    ]
+    assert all("Error:" not in message[0] for message in sent)

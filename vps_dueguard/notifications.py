@@ -509,9 +509,10 @@ def run_bot(
                         continue
                     if callback_id:
                         if not callback_deduper.accept(chat_id, data):
-                            bot.answer_callback_query(callback_id, "Request already received. Please wait.")
+                            _safe_answer_callback_query(bot, callback_id, "Request already received. Please wait.")
                             continue
-                        bot.answer_callback_query(
+                        _safe_answer_callback_query(
+                            bot,
                             callback_id,
                             "Querying, please wait..." if callback_needs_progress(data) else None,
                         )
@@ -556,6 +557,13 @@ def _error_lines(errors: list[str] | None) -> list[str]:
 
 def _runtime_error(exc: Exception) -> str:
     return f"<b>Error:</b> {_html(exc)}"
+
+
+def _safe_answer_callback_query(bot: TelegramBot, callback_id: str, text: str | None = None) -> None:
+    try:
+        bot.answer_callback_query(callback_id, text)
+    except Exception:
+        pass
 
 
 def _command_name(command: str) -> str:
