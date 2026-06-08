@@ -5,6 +5,7 @@ import pytest
 
 from vps_dueguard.models import AppConfig, ServiceInfo
 from vps_dueguard.notifications import (
+    CallbackDeduper,
     ServiceCache,
     TelegramBot,
     TelegramError,
@@ -659,6 +660,23 @@ def test_bot_callback_stale_provider_index_is_clear() -> None:
 
     assert "Provider selection is no longer valid" in reply
     assert markup is not None
+
+
+def test_callback_deduper_releases_after_short_settle_window(monkeypatch) -> None:
+    now = [100.0]
+    monkeypatch.setattr("vps_dueguard.notifications.time.time", lambda: now[0])
+    deduper = CallbackDeduper(settle_seconds=3)
+
+    assert deduper.accept("123", "cmd:summary") is True
+    assert deduper.accept("123", "cmd:summary") is False
+
+    deduper.release("123", "cmd:summary")
+
+    assert deduper.accept("123", "cmd:summary") is False
+
+    now[0] += 3.1
+
+    assert deduper.accept("123", "cmd:summary") is True
 
 
 def test_run_bot_ignores_read_timeout(monkeypatch) -> None:

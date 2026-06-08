@@ -334,19 +334,25 @@ class ServiceCache:
 
 @dataclass
 class CallbackDeduper:
-    ttl_seconds: int = 60
-    seen: dict[str, float] = field(default_factory=dict)
+    settle_seconds: int = 3
+    in_flight: set[str] = field(default_factory=set)
+    settled_until: dict[str, float] = field(default_factory=dict)
 
     def accept(self, chat_id: str, data: str) -> bool:
         now = time.time()
-        for key, timestamp in list(self.seen.items()):
-            if now - timestamp > self.ttl_seconds:
-                del self.seen[key]
         key = f"{chat_id}|{data}"
-        if key in self.seen:
+        for item, deadline in list(self.settled_until.items()):
+            if now >= deadline:
+                del self.settled_until[item]
+        if key in self.in_flight or key in self.settled_until:
             return False
-        self.seen[key] = now
+        self.in_flight.add(key)
         return True
+
+    def release(self, chat_id: str, data: str) -> None:
+        key = f"{chat_id}|{data}"
+        self.in_flight.discard(key)
+        self.settled_until[key] = time.time() + self.settle_seconds
 
 
 def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | None = None) -> str:
@@ -503,6 +509,7 @@ def run_bot(
                     continue
                 chat_id = str(chat.get("id"))
                 data = str(callback.get("data") or "")
+                accepted_callback = False
                 try:
                     app_config = latest_config()
                     if chat_id != require_telegram(app_config).chat_id:
@@ -511,6 +518,7 @@ def run_bot(
                         if not callback_deduper.accept(chat_id, data):
                             _safe_answer_callback_query(bot, callback_id, "Request already received. Please wait.")
                             continue
+                        accepted_callback = True
                         _safe_answer_callback_query(
                             bot,
                             callback_id,
@@ -529,6 +537,9 @@ def run_bot(
                     bot.send_message(reply, chat_id=chat_id, reply_markup=reply_markup)
                 except Exception:
                     continue
+                finally:
+                    if accepted_callback:
+                        callback_deduper.release(chat_id, data)
             if not updates:
                 time.sleep(1)
 
