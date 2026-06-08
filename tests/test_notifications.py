@@ -284,9 +284,11 @@ def test_telegram_answer_callback_query_payload(monkeypatch) -> None:
 
     bot = TelegramBot(require_telegram(config))
     bot.answer_callback_query("callback-1")
+    bot.answer_callback_query("callback-2", "Querying, please wait...")
 
     assert requests[0][0] == "https://api.telegram.org/bottoken/answerCallbackQuery"
     assert requests[0][1] == {"callback_query_id": "callback-1"}
+    assert requests[1][1] == {"callback_query_id": "callback-2", "text": "Querying, please wait..."}
 
 
 def test_telegram_set_commands_payload(monkeypatch) -> None:
@@ -870,8 +872,8 @@ def test_run_bot_ignores_unauthorized_message_and_callback(monkeypatch) -> None:
                 },
             ]
 
-        def answer_callback_query(self, callback_query_id):
-            answered.append(callback_query_id)
+        def answer_callback_query(self, callback_query_id, text=None):
+            answered.append((callback_query_id, text))
 
         def send_message(self, text, chat_id=None, reply_markup=None):
             sent.append((text, chat_id, reply_markup))
@@ -930,8 +932,8 @@ def test_run_bot_handles_authorized_callback(monkeypatch) -> None:
                 }
             ]
 
-        def answer_callback_query(self, callback_query_id):
-            answered.append(callback_query_id)
+        def answer_callback_query(self, callback_query_id, text=None):
+            answered.append((callback_query_id, text))
 
         def send_message(self, text, chat_id=None, reply_markup=None):
             sent.append((text, chat_id, reply_markup))
@@ -940,7 +942,147 @@ def test_run_bot_handles_authorized_callback(monkeypatch) -> None:
 
     run_bot(config, stop_after=lambda: bool(sent))
 
-    assert answered == ["cb-1"]
+    assert answered == [("cb-1", None)]
     assert sent[0][0].startswith("<b>Providers</b>")
     assert sent[0][1] == "123"
     assert sent[0][2]["inline_keyboard"][0][0]["callback_data"] == "provider:0"
+
+
+def test_run_bot_sends_progress_message_for_slow_callback(monkeypatch) -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+    sent = []
+    answered = []
+
+    class FakeBot:
+        def __init__(self, telegram) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def set_commands(self) -> None:
+            pass
+
+        def get_updates(self, offset=None, timeout=30):
+            return [
+                {
+                    "update_id": 1,
+                    "callback_query": {
+                        "id": "cb-1",
+                        "message": {"chat": {"id": 123}},
+                        "data": "cmd:summary",
+                    },
+                }
+            ]
+
+        def answer_callback_query(self, callback_query_id, text=None):
+            answered.append((callback_query_id, text))
+
+        def send_message(self, text, chat_id=None, reply_markup=None):
+            sent.append((text, chat_id, reply_markup))
+
+    def fake_handle_bot_callback(_data, _config, _cache):
+        return "final result", None
+
+    monkeypatch.setattr("vps_dueguard.notifications.TelegramBot", FakeBot)
+    monkeypatch.setattr("vps_dueguard.notifications.handle_bot_callback", fake_handle_bot_callback)
+
+    run_bot(config, stop_after=lambda: len(sent) >= 2)
+
+    assert answered == [("cb-1", "Querying, please wait...")]
+    assert sent[0] == ("<b>Querying</b>\nFetching VPS data. Please wait.", "123", None)
+    assert sent[1] == ("final result", "123", None)
+
+
+def test_run_bot_suppresses_duplicate_callback_clicks(monkeypatch) -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+    calls = []
+    sent = []
+    answered = []
+    updates_seen = {"done": False}
+
+    class FakeBot:
+        def __init__(self, telegram) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def set_commands(self) -> None:
+            pass
+
+        def get_updates(self, offset=None, timeout=30):
+            updates_seen["done"] = True
+            return [
+                {
+                    "update_id": 1,
+                    "callback_query": {
+                        "id": "cb-1",
+                        "message": {"chat": {"id": 123}},
+                        "data": "cmd:summary",
+                    },
+                },
+                {
+                    "update_id": 2,
+                    "callback_query": {
+                        "id": "cb-2",
+                        "message": {"chat": {"id": 123}},
+                        "data": "cmd:summary",
+                    },
+                },
+            ]
+
+        def answer_callback_query(self, callback_query_id, text=None):
+            answered.append((callback_query_id, text))
+
+        def send_message(self, text, chat_id=None, reply_markup=None):
+            sent.append((text, chat_id, reply_markup))
+
+    def fake_handle_bot_callback(data, _config, _cache):
+        calls.append(data)
+        return "final result", None
+
+    monkeypatch.setattr("vps_dueguard.notifications.TelegramBot", FakeBot)
+    monkeypatch.setattr("vps_dueguard.notifications.handle_bot_callback", fake_handle_bot_callback)
+
+    run_bot(config, stop_after=lambda: updates_seen["done"])
+
+    assert calls == ["cmd:summary"]
+    assert answered == [
+        ("cb-1", "Querying, please wait..."),
+        ("cb-2", "Request already received. Please wait."),
+    ]
+    assert [message[0] for message in sent] == [
+        "<b>Querying</b>\nFetching VPS data. Please wait.",
+        "final result",
+    ]

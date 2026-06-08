@@ -3,7 +3,7 @@
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from html import escape as html_escape
 from pathlib import Path
@@ -63,10 +63,13 @@ class TelegramBot:
         if not payload.get("ok"):
             raise TelegramError(str(payload))
 
-    def answer_callback_query(self, callback_query_id: str) -> None:
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        payload: dict[str, object] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
         response = self.client.post(
             f"{self.base_url}/answerCallbackQuery",
-            json={"callback_query_id": callback_query_id},
+            json=payload,
         )
         response.raise_for_status()
         payload = response.json()
@@ -329,6 +332,23 @@ class ServiceCache:
         self.fetched_at = 0.0
 
 
+@dataclass
+class CallbackDeduper:
+    ttl_seconds: int = 60
+    seen: dict[str, float] = field(default_factory=dict)
+
+    def accept(self, chat_id: str, data: str) -> bool:
+        now = time.time()
+        for key, timestamp in list(self.seen.items()):
+            if now - timestamp > self.ttl_seconds:
+                del self.seen[key]
+        key = f"{chat_id}|{data}"
+        if key in self.seen:
+            return False
+        self.seen[key] = now
+        return True
+
+
 def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | None = None) -> str:
     parts = command.strip().split()
     name = _command_name(command)
@@ -395,6 +415,20 @@ def handle_bot_callback(data: str, config: AppConfig, cache: ServiceCache | None
     return "Unknown button. Send /help for available commands.", main_menu_markup()
 
 
+def callback_needs_progress(data: str) -> bool:
+    if data.startswith("provider:"):
+        return True
+    if not data.startswith("cmd:"):
+        return False
+    return data.removeprefix("cmd:") in {"summary", "traffic", "renewals", "refresh"}
+
+
+def callback_progress_message(data: str) -> str:
+    if data == "cmd:refresh":
+        return "<b>Refreshing</b>\nFetching fresh VPS data. Please wait."
+    return "<b>Querying</b>\nFetching VPS data. Please wait."
+
+
 def run_bot(
     config: AppConfig,
     stop_after: Callable[[], bool] | None = None,
@@ -403,6 +437,7 @@ def run_bot(
     telegram = require_telegram(config)
     offset: int | None = None
     cache = ServiceCache()
+    callback_deduper = CallbackDeduper()
     runtime_config = config
     config_mtime: float | None = None
     stop_after = stop_after or (lambda: False)
@@ -473,7 +508,18 @@ def run_bot(
                     if chat_id != require_telegram(app_config).chat_id:
                         continue
                     if callback_id:
-                        bot.answer_callback_query(callback_id)
+                        if not callback_deduper.accept(chat_id, data):
+                            bot.answer_callback_query(callback_id, "Request already received. Please wait.")
+                            continue
+                        bot.answer_callback_query(
+                            callback_id,
+                            "Querying, please wait..." if callback_needs_progress(data) else None,
+                        )
+                    if callback_needs_progress(data):
+                        try:
+                            bot.send_message(callback_progress_message(data), chat_id=chat_id)
+                        except Exception:
+                            pass
                     reply, reply_markup = handle_bot_callback(data, app_config, cache)
                 except Exception as exc:
                     reply = _runtime_error(exc)
