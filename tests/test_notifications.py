@@ -13,6 +13,7 @@ from vps_dueguard.notifications import (
     format_renewals_report,
     format_summary,
     format_traffic_report,
+    handle_bot_callback,
     handle_bot_command,
     parse_service_date,
     require_telegram,
@@ -222,6 +223,72 @@ def test_telegram_send_message_payload(monkeypatch) -> None:
     assert requests[0][1]["parse_mode"] == "HTML"
 
 
+def test_telegram_send_message_accepts_reply_markup(monkeypatch) -> None:
+    requests = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def post(self, url, json):
+            requests.append((url, json))
+            return FakeResponse()
+
+    monkeypatch.setattr("vps_dueguard.notifications.httpx.Client", FakeClient)
+    config = AppConfig.model_validate(
+        {
+            "providers": [],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+    markup = {"inline_keyboard": [[{"text": "Summary", "callback_data": "cmd:summary"}]]}
+
+    bot = TelegramBot(require_telegram(config))
+    bot.send_message("hello", reply_markup=markup)
+
+    assert requests[0][1]["reply_markup"] == markup
+
+
+def test_telegram_answer_callback_query_payload(monkeypatch) -> None:
+    requests = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def post(self, url, json):
+            requests.append((url, json))
+            return FakeResponse()
+
+    monkeypatch.setattr("vps_dueguard.notifications.httpx.Client", FakeClient)
+    config = AppConfig.model_validate(
+        {
+            "providers": [],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+
+    bot = TelegramBot(require_telegram(config))
+    bot.answer_callback_query("callback-1")
+
+    assert requests[0][0] == "https://api.telegram.org/bottoken/answerCallbackQuery"
+    assert requests[0][1] == {"callback_query_id": "callback-1"}
+
+
 def test_telegram_set_commands_payload(monkeypatch) -> None:
     requests = []
 
@@ -260,6 +327,7 @@ def test_telegram_set_commands_payload(monkeypatch) -> None:
 
     assert requests[0][0] == "https://api.telegram.org/bottoken/setMyCommands"
     assert {"command": "summary", "description": "All active VPS services"} in requests[0][1]["commands"]
+    assert {"command": "providers", "description": "List configured providers"} in requests[0][1]["commands"]
 
 
 def test_bot_static_commands() -> None:
@@ -279,7 +347,41 @@ def test_bot_static_commands() -> None:
 
     assert "/summary" in handle_bot_command("/help", config)
     assert "/summary" in handle_bot_command("/start", config)
+    assert "/providers" in handle_bot_command("/help", config)
     assert "Unknown command" in handle_bot_command("/wat", config)
+
+
+def test_providers_command_does_not_query_services(monkeypatch) -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                },
+                {
+                    "name": "provider-b",
+                    "base_url": "https://provider-b.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                },
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+
+    def fail_collect_services(*_args, **_kwargs):
+        raise AssertionError("/providers should not query providers")
+
+    monkeypatch.setattr("vps_dueguard.notifications.collect_services", fail_collect_services)
+
+    reply = handle_bot_command("/providers", config, ServiceCache())
+
+    assert "<b>Providers</b>" in reply
+    assert "- provider-a" in reply
+    assert "- provider-b" in reply
 
 
 def test_unknown_bot_command_does_not_query_services(monkeypatch) -> None:
@@ -423,7 +525,7 @@ telegram:
                 }
             ]
 
-        def send_message(self, text, chat_id=None):
+        def send_message(self, text, chat_id=None, reply_markup=None):
             replies.append((text, chat_id))
 
     def fake_handle_bot_command(_text, config, _cache):
@@ -461,6 +563,98 @@ def test_provider_command_does_not_use_global_cache(monkeypatch) -> None:
 
     assert "Tokyo VPS" in handle_bot_command("/provider provider-a", config, ServiceCache())
     assert calls == ["provider-a"]
+
+
+def test_bot_callback_command_reuses_command_handler(monkeypatch) -> None:
+    calls = []
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+
+    def fake_collect_services(config, provider_name=None):
+        calls.append(provider_name)
+        return [service()], []
+
+    monkeypatch.setattr("vps_dueguard.notifications.collect_services", fake_collect_services)
+    cache = ServiceCache()
+
+    reply, markup = handle_bot_callback("cmd:summary", config, cache)
+    traffic_reply, _markup = handle_bot_callback("cmd:traffic", config, cache)
+
+    assert "Tokyo VPS" in reply
+    assert "1004.00 GB" in traffic_reply
+    assert calls == [None]
+    assert markup is None
+
+
+def test_bot_callback_providers_menu_and_provider_index(monkeypatch) -> None:
+    calls = []
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                },
+                {
+                    "name": "provider-b",
+                    "base_url": "https://provider-b.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                },
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+
+    def fake_collect_services(config, provider_name=None):
+        calls.append(provider_name)
+        return [service()], []
+
+    monkeypatch.setattr("vps_dueguard.notifications.collect_services", fake_collect_services)
+
+    list_reply, markup = handle_bot_callback("cmd:providers", config, ServiceCache())
+    provider_reply, provider_markup = handle_bot_callback("provider:1", config, ServiceCache())
+
+    assert "<b>Providers</b>" in list_reply
+    assert markup is not None
+    assert markup["inline_keyboard"][1][0]["callback_data"] == "provider:1"
+    assert "Tokyo VPS" in provider_reply
+    assert provider_markup is None
+    assert calls == ["provider-b"]
+
+
+def test_bot_callback_stale_provider_index_is_clear() -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+
+    reply, markup = handle_bot_callback("provider:9", config, ServiceCache())
+
+    assert "Provider selection is no longer valid" in reply
+    assert markup is not None
 
 
 def test_run_bot_ignores_read_timeout(monkeypatch) -> None:
@@ -609,7 +803,7 @@ def test_run_bot_replies_to_command_errors(monkeypatch) -> None:
                 }
             ]
 
-        def send_message(self, text, chat_id=None):
+        def send_message(self, text, chat_id=None, reply_markup=None):
             replies.append((text, chat_id))
 
     def fail_handle_bot_command(*_args, **_kwargs):
@@ -621,3 +815,130 @@ def test_run_bot_replies_to_command_errors(monkeypatch) -> None:
     run_bot(config, stop_after=lambda: bool(replies))
 
     assert replies == [("<b>Error:</b> boom", "123")]
+
+
+def test_run_bot_ignores_unauthorized_message_and_callback(monkeypatch) -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+    sent = []
+    answered = []
+    calls = {"updates": 0}
+
+    class FakeBot:
+        def __init__(self, telegram) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def set_commands(self) -> None:
+            pass
+
+        def get_updates(self, offset=None, timeout=30):
+            calls["updates"] += 1
+            return [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 999},
+                        "text": "/summary",
+                    },
+                },
+                {
+                    "update_id": 2,
+                    "callback_query": {
+                        "id": "cb-1",
+                        "message": {"chat": {"id": 999}},
+                        "data": "cmd:summary",
+                    },
+                },
+            ]
+
+        def answer_callback_query(self, callback_query_id):
+            answered.append(callback_query_id)
+
+        def send_message(self, text, chat_id=None, reply_markup=None):
+            sent.append((text, chat_id, reply_markup))
+
+    def fail_handle_bot_command(*_args, **_kwargs):
+        raise AssertionError("unauthorized updates should not be handled")
+
+    monkeypatch.setattr("vps_dueguard.notifications.TelegramBot", FakeBot)
+    monkeypatch.setattr("vps_dueguard.notifications.handle_bot_command", fail_handle_bot_command)
+
+    run_bot(config, stop_after=lambda: calls["updates"] >= 1)
+
+    assert sent == []
+    assert answered == []
+
+
+def test_run_bot_handles_authorized_callback(monkeypatch) -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+    sent = []
+    answered = []
+
+    class FakeBot:
+        def __init__(self, telegram) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def set_commands(self) -> None:
+            pass
+
+        def get_updates(self, offset=None, timeout=30):
+            return [
+                {
+                    "update_id": 1,
+                    "callback_query": {
+                        "id": "cb-1",
+                        "message": {"chat": {"id": 123}},
+                        "data": "cmd:providers",
+                    },
+                }
+            ]
+
+        def answer_callback_query(self, callback_query_id):
+            answered.append(callback_query_id)
+
+        def send_message(self, text, chat_id=None, reply_markup=None):
+            sent.append((text, chat_id, reply_markup))
+
+    monkeypatch.setattr("vps_dueguard.notifications.TelegramBot", FakeBot)
+
+    run_bot(config, stop_after=lambda: bool(sent))
+
+    assert answered == ["cb-1"]
+    assert sent[0][0].startswith("<b>Providers</b>")
+    assert sent[0][1] == "123"
+    assert sent[0][2]["inline_keyboard"][0][0]["callback_data"] == "provider:0"

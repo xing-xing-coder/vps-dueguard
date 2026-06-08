@@ -23,6 +23,7 @@ BOT_COMMANDS = [
     ("summary", "All active VPS services"),
     ("traffic", "Traffic usage and remaining traffic"),
     ("renewals", "Renewal dates and days left"),
+    ("providers", "List configured providers"),
     ("provider", "Query one provider, e.g. /provider provider-a"),
     ("refresh", "Refresh cached VPS data"),
     ("help", "Show help"),
@@ -44,15 +45,28 @@ class TelegramBot:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def send_message(self, text: str, chat_id: str | None = None) -> None:
+    def send_message(self, text: str, chat_id: str | None = None, reply_markup: dict[str, object] | None = None) -> None:
+        payload: dict[str, object] = {
+            "chat_id": chat_id or self.config.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         response = self.client.post(
             f"{self.base_url}/sendMessage",
-            json={
-                "chat_id": chat_id or self.config.chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
+            json=payload,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not payload.get("ok"):
+            raise TelegramError(str(payload))
+
+    def answer_callback_query(self, callback_query_id: str) -> None:
+        response = self.client.post(
+            f"{self.base_url}/answerCallbackQuery",
+            json={"callback_query_id": callback_query_id},
         )
         response.raise_for_status()
         payload = response.json()
@@ -172,6 +186,63 @@ def format_renewals_report(services: list[ServiceInfo], errors: list[str] | None
     return _join_lines(lines)
 
 
+def format_help() -> str:
+    return (
+        "<b>Commands</b>\n"
+        "/summary - all active VPS services\n"
+        "/traffic - traffic usage and remaining traffic\n"
+        "/renewals - renewal dates and days left\n"
+        "/providers - list configured providers\n"
+        "/provider <name> - query one provider\n"
+        "/refresh - refresh cached VPS data"
+    )
+
+
+def format_provider_list(config: AppConfig) -> str:
+    if not config.providers:
+        return (
+            "<b>No providers configured.</b>\n"
+            "Run vpsm, open provider management, add at least one provider, then send /refresh."
+        )
+    lines = ["<b>Providers</b>", ""]
+    lines.extend(f"- {_html(provider.name)}" for provider in config.providers)
+    return _join_lines(lines)
+
+
+def main_menu_markup() -> dict[str, object]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Summary", "callback_data": "cmd:summary"},
+                {"text": "Traffic", "callback_data": "cmd:traffic"},
+            ],
+            [
+                {"text": "Renewals", "callback_data": "cmd:renewals"},
+                {"text": "Providers", "callback_data": "cmd:providers"},
+            ],
+            [{"text": "Refresh", "callback_data": "cmd:refresh"}],
+        ]
+    }
+
+
+def providers_menu_markup(config: AppConfig) -> dict[str, object]:
+    rows = [
+        [{"text": provider.name, "callback_data": f"provider:{index}"}]
+        for index, provider in enumerate(config.providers)
+    ]
+    rows.append([{"text": "Main menu", "callback_data": "cmd:help"}])
+    return {"inline_keyboard": rows}
+
+
+def reply_markup_for_command(command: str, config: AppConfig) -> dict[str, object] | None:
+    name = _command_name(command)
+    if name in {"/help", "/start"}:
+        return main_menu_markup()
+    if name == "/providers":
+        return providers_menu_markup(config) if config.providers else main_menu_markup()
+    return None
+
+
 def build_renewal_alerts(
     services: list[ServiceInfo],
     thresholds: list[int],
@@ -260,20 +331,15 @@ class ServiceCache:
 
 def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | None = None) -> str:
     parts = command.strip().split()
-    name = parts[0].split("@", 1)[0].lower() if parts else "/help"
-    known_commands = {"/summary", "/traffic", "/renewals", "/provider", "/refresh", "/help", "/start"}
+    name = _command_name(command)
+    known_commands = {"/summary", "/traffic", "/renewals", "/providers", "/provider", "/refresh", "/help", "/start"}
 
     if name in {"/help", "/start"}:
-        return (
-            "<b>Commands</b>\n"
-            "/summary - all active VPS services\n"
-            "/traffic - traffic usage and remaining traffic\n"
-            "/renewals - renewal dates and days left\n"
-            "/provider <name> - query one provider\n"
-            "/refresh - refresh cached VPS data"
-        )
+        return format_help()
     if name not in known_commands:
         return "Unknown command. Send /help for available commands."
+    if name == "/providers":
+        return format_provider_list(config)
     if not config.providers:
         return (
             "<b>No providers configured.</b>\n"
@@ -308,6 +374,25 @@ def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | No
     if name == "/provider":
         return format_summary(services, errors)
     return "Unknown command. Send /help for available commands."
+
+
+def handle_bot_callback(data: str, config: AppConfig, cache: ServiceCache | None = None) -> tuple[str, dict[str, object] | None]:
+    if data.startswith("cmd:"):
+        command = f"/{data.removeprefix('cmd:')}"
+        return handle_bot_command(command, config, cache), reply_markup_for_command(command, config)
+
+    if data.startswith("provider:"):
+        raw_index = data.removeprefix("provider:")
+        try:
+            index = int(raw_index)
+        except ValueError:
+            return "Provider selection is no longer valid. Send /providers to load the latest list.", providers_menu_markup(config)
+        if index < 0 or index >= len(config.providers):
+            return "Provider selection is no longer valid. Send /providers to load the latest list.", providers_menu_markup(config)
+        provider = config.providers[index]
+        return handle_bot_command(f"/provider {provider.name}", config, cache), None
+
+    return "Unknown button. Send /help for available commands.", main_menu_markup()
 
 
 def run_bot(
@@ -348,25 +433,53 @@ def run_bot(
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     offset = update_id + 1
+                app_config: AppConfig | None = None
                 message = update.get("message")
-                if not isinstance(message, dict):
+                if isinstance(message, dict):
+                    chat = message.get("chat")
+                    if not isinstance(chat, dict):
+                        continue
+                    chat_id = str(chat.get("id"))
+                    text = str(message.get("text") or "").strip()
+                    if not text.startswith("/"):
+                        continue
+                    try:
+                        app_config = latest_config()
+                        if chat_id != require_telegram(app_config).chat_id:
+                            continue
+                        reply = handle_bot_command(text, app_config, cache)
+                        reply_markup = reply_markup_for_command(text, app_config)
+                    except Exception as exc:
+                        reply = _runtime_error(exc)
+                        reply_markup = None
+                    try:
+                        bot.send_message(reply, chat_id=chat_id, reply_markup=reply_markup)
+                    except Exception:
+                        continue
                     continue
-                chat = message.get("chat")
+
+                callback = update.get("callback_query")
+                if not isinstance(callback, dict):
+                    continue
+                callback_id = str(callback.get("id") or "")
+                message = callback.get("message")
+                chat = message.get("chat") if isinstance(message, dict) else None
                 if not isinstance(chat, dict):
                     continue
                 chat_id = str(chat.get("id"))
-                text = str(message.get("text") or "").strip()
-                if not text.startswith("/"):
-                    continue
+                data = str(callback.get("data") or "")
                 try:
                     app_config = latest_config()
                     if chat_id != require_telegram(app_config).chat_id:
                         continue
-                    reply = handle_bot_command(text, app_config, cache)
+                    if callback_id:
+                        bot.answer_callback_query(callback_id)
+                    reply, reply_markup = handle_bot_callback(data, app_config, cache)
                 except Exception as exc:
                     reply = _runtime_error(exc)
+                    reply_markup = None
                 try:
-                    bot.send_message(reply, chat_id=chat_id)
+                    bot.send_message(reply, chat_id=chat_id, reply_markup=reply_markup)
                 except Exception:
                     continue
             if not updates:
@@ -397,6 +510,11 @@ def _error_lines(errors: list[str] | None) -> list[str]:
 
 def _runtime_error(exc: Exception) -> str:
     return f"<b>Error:</b> {_html(exc)}"
+
+
+def _command_name(command: str) -> str:
+    parts = command.strip().split()
+    return parts[0].split("@", 1)[0].lower() if parts else "/help"
 
 
 def _html(value: object) -> str:

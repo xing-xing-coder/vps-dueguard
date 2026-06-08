@@ -177,6 +177,8 @@ telegram:
 
 Only the configured `chat_id` can query VPS information.
 
+Send `/start` to open an inline button menu for summary, traffic, renewals, provider selection, and refresh.
+
 Available commands:
 
 | Command | Description |
@@ -184,6 +186,7 @@ Available commands:
 | `/summary` | Show all active VPS services, renewal dates, and traffic |
 | `/traffic` | Show traffic usage and remaining traffic |
 | `/renewals` | Show renewal dates and days left |
+| `/providers` | List configured providers and show provider buttons |
 | `/provider provider-a` | Query a single configured provider |
 | `/refresh` | Force a fresh query and refresh the 5-minute cache |
 | `/help` | Show command help |
