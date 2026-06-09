@@ -1,5 +1,6 @@
 ﻿from vps_dueguard.parser import (
     detect_login_problem,
+    extract_billing_cycle,
     extract_login_action,
     extract_login_payload,
     extract_price_from_detail,
@@ -72,7 +73,7 @@ def test_parse_service_detail() -> None:
     </table>
     """
 
-    assert parse_service_detail(html) == ("2026-08-01", "unknown", "512 GB", "unknown")
+    assert parse_service_detail(html) == ("2026-08-01", "unknown", "512 GB", "unknown", "unknown")
 
 
 def test_find_traffic_from_text_and_ratio() -> None:
@@ -102,7 +103,7 @@ def test_parse_services_keeps_used_total_and_remaining() -> None:
 
 
 def test_parse_service_detail_unknown_traffic() -> None:
-    assert parse_service_detail("<p>Next Due Date: 2026-08-01</p>") == ("2026-08-01", "unknown", "unknown", "unknown")
+    assert parse_service_detail("<p>Next Due Date: 2026-08-01</p>") == ("2026-08-01", "unknown", "unknown", "unknown", "unknown")
 
 
 def test_parse_service_detail_with_price() -> None:
@@ -113,7 +114,7 @@ def test_parse_service_detail_with_price() -> None:
       <tr><th>Traffic</th><td>20 GB / 1 TB</td></tr>
     </table>
     """
-    expiry, usage, remaining, price = parse_service_detail(html)
+    expiry, usage, remaining, price, cycle = parse_service_detail(html)
 
     assert expiry == "2026-08-01"
     assert price == "$3.50 USD"
@@ -173,3 +174,53 @@ def test_parse_size_to_mb() -> None:
     assert parse_size_to_mb("1 TB") == 1024 * 1024
     assert parse_size_to_mb("20 GB") == 20 * 1024
     assert parse_size_to_mb("unknown") is None
+
+
+def test_extract_billing_cycle() -> None:
+    assert extract_billing_cycle("Monthly") == "Monthly"
+    assert extract_billing_cycle("monthly") == "Monthly"
+    assert extract_billing_cycle("/mo") == "Monthly"
+    assert extract_billing_cycle("Annually") == "Annually"
+    assert extract_billing_cycle("yearly") == "Annually"
+    assert extract_billing_cycle("/yr") == "Annually"
+    assert extract_billing_cycle("Quarterly") == "Quarterly"
+    assert extract_billing_cycle("Semi-Annually") == "Semi-Annually"
+    assert extract_billing_cycle("Free") == "Free"
+    assert extract_billing_cycle("unknown") == "unknown"
+    assert extract_billing_cycle("") == "unknown"
+
+
+def test_parse_service_detail_with_billing_cycle() -> None:
+    html = """
+    <table>
+      <tr><th>Next Due Date</th><td>2026-08-01</td></tr>
+      <tr><th>Recurring Amount</th><td>$3.50 USD</td></tr>
+      <tr><th>Billing Cycle</th><td>Monthly</td></tr>
+    </table>
+    """
+    expiry, usage, remaining, price, cycle = parse_service_detail(html)
+
+    assert price == "$3.50 USD"
+    assert cycle == "Monthly"
+
+
+def test_parse_services_from_table_with_billing_cycle() -> None:
+    html = """
+    <table>
+      <tr><th>Product/Service</th><th>Status</th><th>Next Due Date</th><th>Amount</th><th>Billing Cycle</th><th></th></tr>
+      <tr>
+        <td>Tokyo VPS 1G</td>
+        <td>Active</td>
+        <td>2026-12-31</td>
+        <td>$5.00 USD</td>
+        <td>Annually</td>
+        <td><a href="clientarea.php?action=productdetails&id=42">Manage</a></td>
+      </tr>
+    </table>
+    """
+
+    services = parse_services(html, "https://provider-a.example/")
+
+    assert len(services) == 1
+    assert services[0].price == "$5.00 USD"
+    assert services[0].billing_cycle == "Annually"

@@ -49,6 +49,7 @@ class ServiceInfo(BaseModel):
     traffic_usage: str = "unknown"
     traffic_remaining: str = "unknown"
     price: str = "unknown"
+    billing_cycle: str = "unknown"
     detail_url: str
 
 

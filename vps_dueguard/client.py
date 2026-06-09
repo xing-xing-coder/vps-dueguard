@@ -117,12 +117,13 @@ class WHMCSClient:
             traffic_usage = service.traffic_usage
             traffic_remaining = service.traffic_remaining
             price = service.price
+            billing_cycle = service.billing_cycle
 
             if service.detail_url:
                 try:
                     detail = self.client.get(self._english_url(service.detail_url))
                     detail.raise_for_status()
-                    detail_expiry, detail_usage, detail_remaining, detail_price = parse_service_detail(detail.text)
+                    detail_expiry, detail_usage, detail_remaining, detail_price, detail_cycle = parse_service_detail(detail.text)
                     if detail_expiry != "unknown" and (expires_at == "unknown" or re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", detail_expiry)):
                         expires_at = detail_expiry
                     if detail_usage != "unknown":
@@ -131,6 +132,8 @@ class WHMCSClient:
                         traffic_remaining = detail_remaining
                     if price == "unknown" and detail_price != "unknown":
                         price = detail_price
+                    if billing_cycle == "unknown" and detail_cycle != "unknown":
+                        billing_cycle = detail_cycle
                 except httpx.HTTPError:
                     pass
 
@@ -143,6 +146,7 @@ class WHMCSClient:
                     traffic_usage=traffic_usage,
                     traffic_remaining=traffic_remaining,
                     price=price,
+                    billing_cycle=billing_cycle,
                     detail_url=service.detail_url,
                 )
             )
@@ -196,6 +200,7 @@ class WHMCSClient:
                     traffic_usage="unknown",
                     traffic_remaining="unknown",
                     price="unknown",
+                    billing_cycle="unknown",
                     detail_url=detail_url,
                 )
             )

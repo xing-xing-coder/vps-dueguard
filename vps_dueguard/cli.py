@@ -276,8 +276,12 @@ def _print_table(services: list[ServiceInfo]) -> None:
     table.add_column("Traffic Used / Total")
     table.add_column("Traffic Remaining")
     table.add_column("Price")
+    table.add_column("Cycle")
 
     for service in services:
+        price_str = service.price
+        if service.billing_cycle and service.billing_cycle != "unknown":
+            price_str = f"{service.price} ({service.billing_cycle})"
         table.add_row(
             service.provider,
             service.service_name,
@@ -285,7 +289,8 @@ def _print_table(services: list[ServiceInfo]) -> None:
             format_service_date(service.expires_at),
             service.traffic_usage,
             service.traffic_remaining,
-            service.price,
+            price_str,
+            service.billing_cycle if service.billing_cycle != "unknown" else "",
         )
 
     if services:

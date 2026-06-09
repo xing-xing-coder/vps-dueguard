@@ -45,6 +45,40 @@ PRICE_LABELS = (
 TRAFFIC_LABELS = ("traffic", "bandwidth", "data")
 
 
+BILLING_CYCLE_LABELS = (
+    "billing cycle",
+    "billing",
+    "cycle",
+)
+
+BILLING_CYCLE_MAP = {
+    "monthly": "Monthly",
+    "month": "Monthly",
+    "mo": "Monthly",
+    "/mo": "Monthly",
+    "/month": "Monthly",
+    "quarterly": "Quarterly",
+    "quarter": "Quarterly",
+    "semi-annually": "Semi-Annually",
+    "semiannually": "Semi-Annually",
+    "semi-annual": "Semi-Annually",
+    "half-yearly": "Semi-Annually",
+    "annually": "Annually",
+    "annual": "Annually",
+    "yearly": "Annually",
+    "year": "Annually",
+    "/yr": "Annually",
+    "/year": "Annually",
+    "free": "Free",
+    "one time": "One-Time",
+    "one-time": "One-Time",
+    "triennially": "Triennially",
+    "triennial": "Triennially",
+    "biennially": "Biennially",
+    "biennial": "Biennially",
+}
+
+
 @dataclass(frozen=True)
 class ParsedService:
     service_name: str
@@ -53,6 +87,7 @@ class ParsedService:
     traffic_usage: str
     traffic_remaining: str
     price: str
+    billing_cycle: str
     detail_url: str
 
 
@@ -112,12 +147,13 @@ def parse_services(html: str, base_url: str) -> list[ParsedService]:
     return services or _parse_services_from_cards(soup, base_url)
 
 
-def parse_service_detail(html: str) -> tuple[str, str, str, str]:
+def parse_service_detail(html: str) -> tuple[str, str, str, str, str]:
     soup = soup_from_html(html)
     expires_at = find_labeled_value(soup, EXPIRY_LABELS) or "unknown"
     traffic_usage, traffic_remaining = find_traffic_usage_and_remaining(soup)
     price = extract_price_from_detail(soup)
-    return _date_or_unknown(expires_at), traffic_usage, traffic_remaining, price
+    billing_cycle = extract_billing_cycle_from_detail(soup)
+    return _date_or_unknown(expires_at), traffic_usage, traffic_remaining, price, billing_cycle
 
 
 def find_labeled_value(soup: BeautifulSoup, labels: tuple[str, ...]) -> str | None:
@@ -182,6 +218,26 @@ def extract_price_from_text(text: str) -> str:
     return "unknown"
 
 
+def extract_billing_cycle(text: str) -> str:
+    if not text or text == "unknown":
+        return "unknown"
+    cleaned = text.strip().lower()
+    for pattern, normalized in BILLING_CYCLE_MAP.items():
+        if pattern in cleaned:
+            return normalized
+    return _clean_spaces(text)
+
+
+def extract_billing_cycle_from_detail(soup: BeautifulSoup) -> str:
+    for label in BILLING_CYCLE_LABELS:
+        value = find_labeled_value(soup, (label,))
+        if value:
+            cycle = extract_billing_cycle(value)
+            if cycle != "unknown":
+                return cycle
+    return "unknown"
+
+
 def parse_size_to_mb(value: str) -> float | None:
     return _parse_size_to_mb(value)
 
@@ -236,6 +292,10 @@ def _parse_services_from_table(soup: BeautifulSoup, base_url: str) -> list[Parse
             )
             raw_price = _value_by_header(headers, cells, ("amount", "price", "cost", "billing", "recurring")) or "unknown"
             price = extract_price_from_text(raw_price) if raw_price != "unknown" else "unknown"
+            raw_cycle = _value_by_header(headers, cells, ("billing cycle", "cycle", "billing")) or "unknown"
+            billing_cycle = extract_billing_cycle(raw_cycle) if raw_cycle != "unknown" else "unknown"
+            if billing_cycle == "unknown" and raw_price != "unknown":
+                billing_cycle = extract_billing_cycle(raw_price)
             services.append(
                 ParsedService(
                     service_name=_service_name_from_cells(cells),
@@ -246,6 +306,7 @@ def _parse_services_from_table(soup: BeautifulSoup, base_url: str) -> list[Parse
                     traffic_usage=traffic_usage,
                     traffic_remaining=traffic_remaining,
                     price=price,
+                    billing_cycle=billing_cycle,
                     detail_url=_detail_url_from_row(row, base_url),
                 )
             )
@@ -269,6 +330,7 @@ def _parse_services_from_cards(soup: BeautifulSoup, base_url: str) -> list[Parse
                 traffic_usage="unknown",
                 traffic_remaining="unknown",
                 price="unknown",
+                billing_cycle="unknown",
                 detail_url=urljoin(base_url, href),
             )
         )

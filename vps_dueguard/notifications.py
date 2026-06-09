@@ -186,8 +186,9 @@ def format_renewals_report(services: list[ServiceInfo], errors: list[str] | None
                 f"Expires: {_html(expires_at.isoformat())}",
                 f"Days left: <b>{days}</b>",
             ]
-            if service.price and service.price != "unknown":
-                block.append(f"Price: {_html(service.price)}")
+            price_line = _format_price_line(service)
+            if price_line:
+                block.append(price_line)
             block.append("")
             lines.extend(block)
     elif errors:
@@ -252,11 +253,9 @@ def providers_menu_markup(config: AppConfig) -> dict[str, object]:
 
 def reply_markup_for_command(command: str, config: AppConfig) -> dict[str, object] | None:
     name = _command_name(command)
-    if name in {"/help", "/start"}:
-        return main_menu_markup()
     if name == "/providers":
         return providers_menu_markup(config) if config.providers else main_menu_markup()
-    if name == "/cost":
+    if name in {"/summary", "/traffic", "/renewals", "/cost", "/provider", "/refresh", "/help", "/start"}:
         return main_menu_markup()
     return None
 
@@ -294,8 +293,9 @@ def build_renewal_alerts(
             f"Expires: {_html(expires_at.isoformat())} ({days_left} days left)",
             f"Traffic: {_html(service.traffic_usage)}, remaining {_html(service.traffic_remaining)}",
         ]
-        if service.price and service.price != "unknown":
-            alert_lines.append(f"Price: {_html(service.price)}")
+        price_line = _format_price_line(service)
+        if price_line:
+            alert_lines.append(price_line)
         alerts.append("\n".join(alert_lines))
 
     state["sent_renewals"] = sorted(sent)
@@ -416,7 +416,10 @@ def format_cost_summary(services: list[ServiceInfo], errors: list[str] | None = 
                 has_any_price = True
                 provider_total += amount
                 provider_currency = currency
-                lines.append(f"  {_html(svc.service_name)}: {_html(svc.price)}")
+                if svc.billing_cycle and svc.billing_cycle != "unknown":
+                    lines.append(f"  {_html(svc.service_name)}: {_html(svc.price)} ({_html(svc.billing_cycle)})")
+                else:
+                    lines.append(f"  {_html(svc.service_name)}: {_html(svc.price)}")
             else:
                 lines.append(f"  {_html(svc.service_name)}: {_html(svc.price)}")
 
@@ -756,6 +759,14 @@ def run_bot(
                 time.sleep(1)
 
 
+def _format_price_line(service: ServiceInfo) -> str | None:
+    if not service.price or service.price == "unknown":
+        return None
+    if service.billing_cycle and service.billing_cycle != "unknown":
+        return f"Price: {_html(service.price)} ({_html(service.billing_cycle)})"
+    return f"Price: {_html(service.price)}"
+
+
 def _service_block(service: ServiceInfo, include_traffic: bool, include_expiry: bool, include_price: bool = False) -> list[str]:
     lines = [
         "",
@@ -767,8 +778,10 @@ def _service_block(service: ServiceInfo, include_traffic: bool, include_expiry: 
     if include_traffic:
         lines.append(f"Traffic: {_html(service.traffic_usage)}")
         lines.append(f"Remaining: {_html(service.traffic_remaining)}")
-    if include_price and service.price and service.price != "unknown":
-        lines.append(f"Price: {_html(service.price)}")
+    if include_price:
+        price_line = _format_price_line(service)
+        if price_line:
+            lines.append(price_line)
     return lines
 
 

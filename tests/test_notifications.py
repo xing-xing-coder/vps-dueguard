@@ -641,7 +641,8 @@ def test_bot_callback_command_reuses_command_handler(monkeypatch) -> None:
     assert "Tokyo VPS" in reply
     assert "1004.00 GB" in traffic_reply
     assert calls == [None]
-    assert markup is None
+    assert markup is not None
+    assert markup["inline_keyboard"][0][0]["text"] == "Summary"
 
 
 def test_bot_callback_providers_menu_and_provider_index(monkeypatch) -> None:
