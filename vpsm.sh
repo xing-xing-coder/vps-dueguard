@@ -20,6 +20,8 @@ DAILY_SERVICE="/etc/systemd/system/vps-dueguard-daily.service"
 DAILY_TIMER="/etc/systemd/system/vps-dueguard-daily.timer"
 RENEWALS_SERVICE="/etc/systemd/system/vps-dueguard-renewals.service"
 RENEWALS_TIMER="/etc/systemd/system/vps-dueguard-renewals.timer"
+TRAFFIC_SERVICE="/etc/systemd/system/vps-dueguard-traffic.service"
+TRAFFIC_TIMER="/etc/systemd/system/vps-dueguard-traffic.timer"
 
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=10
@@ -122,7 +124,7 @@ msg() {
 }
 
 show_header() {
-    local install_status bot_status daily_status renewals_status python_status providers_status telegram_status
+    local install_status bot_status daily_status renewals_status traffic_status python_status providers_status telegram_status
     if [ -d "$INSTALL_DIR" ]; then
         install_status="$(msg installed)"
     else
@@ -131,6 +133,7 @@ show_header() {
     bot_status="$(service_status vps-dueguard-bot.service)"
     daily_status="$(service_status vps-dueguard-daily.timer)"
     renewals_status="$(service_status vps-dueguard-renewals.timer)"
+    traffic_status="$(service_status vps-dueguard-traffic.timer)"
     python_status="$(current_python_status)"
     providers_status="$(provider_count)"
     telegram_status="$(telegram_config_status)"
@@ -146,6 +149,7 @@ VPS DueGuard 设置
 - Bot 服务: $bot_status
 - 日报定时器: $daily_status
 - 续费提醒定时器: $renewals_status
+- 流量预警定时器: $traffic_status
 EOF_HEADER
     else
         cat <<EOF_HEADER
@@ -159,6 +163,7 @@ Status:
 - Bot service: $bot_status
 - Daily timer: $daily_status
 - Renewal timer: $renewals_status
+- Traffic alert timer: $traffic_status
 EOF_HEADER
     fi
 }
@@ -293,7 +298,7 @@ first_run_wizard() {
     if telegram_is_configured; then
         read_input "$(prompt enable_timers)" answer
         if is_yes "$answer"; then
-            systemctl enable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer || true
+            systemctl enable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer vps-dueguard-traffic.timer || true
         fi
         read_input "$(prompt enable_bot)" answer
         if is_yes "$answer"; then
@@ -795,6 +800,34 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF_RENEWALS_TIMER
+
+    cat > "$TRAFFIC_SERVICE" <<EOF_TRAFFIC_SERVICE
+[Unit]
+Description=VPS DueGuard Traffic Alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$VENV_DIR/bin/python -m vps_dueguard notify traffic-alerts --config $CONFIG_FILE
+EOF_TRAFFIC_SERVICE
+
+    local traffic_interval
+    traffic_interval="$(read_config_value notifications.traffic_alerts.check_interval_hours)"
+    [ -z "$traffic_interval" ] && traffic_interval="6"
+
+    cat > "$TRAFFIC_TIMER" <<EOF_TRAFFIC_TIMER
+[Unit]
+Description=Run VPS DueGuard traffic alerts
+
+[Timer]
+OnCalendar=*-*-* 00/${traffic_interval}:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF_TRAFFIC_TIMER
 }
 
 ensure_config_exists() {
@@ -922,10 +955,12 @@ manage_telegram() {
             1) show_telegram_status; pause ;;
             2) edit_telegram_config ;;
             3) edit_renewal_days ;;
-            4) run_telegram_test; pause "$(prompt telegram_test_finished)" ;;
-            5) run_daily_report; pause ;;
-            6) run_renewal_check; pause ;;
-            7) return ;;
+            4) edit_traffic_alert ;;
+            5) run_telegram_test; pause "$(prompt telegram_test_finished)" ;;
+            6) run_daily_report; pause ;;
+            7) run_renewal_check; pause ;;
+            8) run_traffic_check; pause ;;
+            9) return ;;
             *) pause "$(msg invalid_option)" ;;
         esac
     done
@@ -939,10 +974,12 @@ Telegram 和提醒管理
 1. 查看配置状态
 2. 修改 Bot Token 和 Chat ID
 3. 修改续费提醒天数
-4. 测试 Telegram 消息
-5. 发送一次日报
-6. 执行一次续费提醒检查
-7. 返回
+4. 修改流量预警设置
+5. 测试 Telegram 消息
+6. 发送一次日报
+7. 执行一次续费提醒检查
+8. 执行一次流量预警检查
+9. 返回
 EOF_TELEGRAM_MENU
     else
         cat <<'EOF_TELEGRAM_MENU'
@@ -951,19 +988,24 @@ Telegram and notification management
 1. Show config status
 2. Edit bot token and chat ID
 3. Edit renewal reminder days
-4. Test Telegram message
-5. Send one daily report
-6. Run one renewal check
-7. Back
+4. Edit traffic alert settings
+5. Test Telegram message
+6. Send one daily report
+7. Run one renewal check
+8. Run one traffic alert check
+9. Back
 EOF_TELEGRAM_MENU
     fi
 }
 
 show_telegram_status() {
-    local token chat_id days
+    local token chat_id days traffic_enabled traffic_threshold traffic_interval
     token="$(read_config_value telegram.bot_token)"
     chat_id="$(read_config_value telegram.chat_id)"
     days="$(read_renewal_days)"
+    traffic_enabled="$(read_config_value notifications.traffic_alerts.enabled)"
+    traffic_threshold="$(read_config_value notifications.traffic_alerts.threshold)"
+    traffic_interval="$(read_config_value notifications.traffic_alerts.check_interval_hours)"
     echo "Telegram: $(telegram_config_status)"
     if [ -n "$token" ]; then
         echo "Bot token: $token"
@@ -972,6 +1014,11 @@ show_telegram_status() {
         echo "Chat ID: $chat_id"
     fi
     echo "Renewal days: $days"
+    if [ "$traffic_enabled" = "false" ]; then
+        echo "Traffic alerts: disabled"
+    else
+        echo "Traffic alerts: enabled (threshold: ${traffic_threshold:-80}%, interval: ${traffic_interval:-6}h)"
+    fi
 }
 
 edit_telegram_config() {
@@ -995,6 +1042,56 @@ edit_renewal_days() {
     read_renewal_days_prompt days
     [ -n "$days" ] || return 0
     if ! set_renewal_days_config "$days"; then
+        pause "$(prompt config_save_failed)"
+        return 0
+    fi
+    pause "$(prompt telegram_saved)"
+}
+
+edit_traffic_alert() {
+    ensure_installed || return
+    local current_enabled current_threshold current_interval answer threshold interval
+    current_enabled="$(read_config_value notifications.traffic_alerts.enabled)"
+    current_threshold="$(read_config_value notifications.traffic_alerts.threshold)"
+    current_interval="$(read_config_value notifications.traffic_alerts.check_interval_hours)"
+    [ -z "$current_enabled" ] && current_enabled="true"
+    [ -z "$current_threshold" ] && current_threshold="80"
+    [ -z "$current_interval" ] && current_interval="6"
+
+    if [ "$LANG_CHOICE" = "zh" ]; then
+        echo "当前流量预警: 已$([ "$current_enabled" = "false" ] && echo '禁用' || echo '启用'), 阈值: ${current_threshold}%, 检查间隔: ${current_interval}小时"
+        read_input "是否启用流量预警？[Y/n]: " answer
+        if [ "$answer" = "n" ] || [ "$answer" = "N" ]; then
+            set_traffic_alert_config "false" "$current_threshold" "$current_interval"
+            pause "$(prompt telegram_saved)"
+            return 0
+        fi
+        read_input "流量预警阈值百分比 (1-100) [${current_threshold}]: " threshold
+        [ -z "$threshold" ] && threshold="$current_threshold"
+        read_input "检查间隔，小时 (1-168) [${current_interval}]: " interval
+    else
+        echo "Traffic alerts: $([ "$current_enabled" = "false" ] && echo 'disabled' || echo 'enabled'), threshold: ${current_threshold}%, interval: ${current_interval}h"
+        read_input "Enable traffic alerts? [Y/n]: " answer
+        if [ "$answer" = "n" ] || [ "$answer" = "N" ]; then
+            set_traffic_alert_config "false" "$current_threshold" "$current_interval"
+            pause "$(prompt telegram_saved)"
+            return 0
+        fi
+        read_input "Traffic alert threshold percentage (1-100) [${current_threshold}]: " threshold
+        [ -z "$threshold" ] && threshold="$current_threshold"
+        read_input "Check interval in hours (1-168) [${current_interval}]: " interval
+    fi
+
+    [ -z "$interval" ] && interval="$current_interval"
+    if ! [[ "$threshold" =~ ^[0-9]+$ ]] || [ "$threshold" -lt 1 ] || [ "$threshold" -gt 100 ]; then
+        pause "$(prompt invalid_renewal_days)"
+        return 0
+    fi
+    if ! [[ "$interval" =~ ^[0-9]+$ ]] || [ "$interval" -lt 1 ] || [ "$interval" -gt 168 ]; then
+        pause "$(prompt invalid_renewal_days)"
+        return 0
+    fi
+    if ! set_traffic_alert_config "true" "$threshold" "$interval"; then
         pause "$(prompt config_save_failed)"
         return 0
     fi
@@ -1025,10 +1122,12 @@ manage_tests() {
         case "$choice" in
             1) run_vps_query_all; pause "$(prompt query_finished)" ;;
             2) run_vps_query_provider; pause "$(prompt query_finished)" ;;
-            3) run_telegram_test; pause "$(prompt telegram_test_finished)" ;;
-            4) run_daily_report; pause ;;
-            5) run_renewal_check; pause ;;
-            6) return ;;
+            3) run_cost_summary; pause "$(prompt query_finished)" ;;
+            4) run_telegram_test; pause "$(prompt telegram_test_finished)" ;;
+            5) run_daily_report; pause ;;
+            6) run_renewal_check; pause ;;
+            7) run_traffic_check; pause ;;
+            8) return ;;
             *) pause "$(msg invalid_option)" ;;
         esac
     done
@@ -1041,10 +1140,12 @@ show_tests_menu() {
 
 1. 查询全部服务商
 2. 查询指定服务商
-3. 测试 Telegram 消息
-4. 发送一次日报
-5. 执行一次续费提醒检查
-6. 返回
+3. 查询费用汇总
+4. 测试 Telegram 消息
+5. 发送一次日报
+6. 执行一次续费提醒检查
+7. 执行一次流量预警检查
+8. 返回
 EOF_TESTS_MENU
     else
         cat <<'EOF_TESTS_MENU'
@@ -1052,16 +1153,22 @@ Query and tests
 
 1. Query all providers
 2. Query one provider
-3. Test Telegram message
-4. Send one daily report
-5. Run one renewal check
-6. Back
+3. Query cost summary
+4. Test Telegram message
+5. Send one daily report
+6. Run one renewal check
+7. Run one traffic alert check
+8. Back
 EOF_TESTS_MENU
     fi
 }
 
 run_vps_query_all() {
     run_python_cli list || true
+}
+
+run_cost_summary() {
+    run_python_cli cost || true
 }
 
 run_vps_query_provider() {
@@ -1083,12 +1190,16 @@ run_renewal_check() {
     run_python_cli notify renewals || true
 }
 
+run_traffic_check() {
+    run_python_cli notify traffic-alerts || true
+}
+
 run_python_cli() {
     local command_name="${1:-}"
     [ -n "$command_name" ] || return 1
     shift || true
     case "$command_name" in
-        list|bot)
+        list|bot|cost)
             (cd "$INSTALL_DIR" && "$VENV_DIR/bin/python" -m vps_dueguard "$command_name" --config "$CONFIG_FILE" "$@")
             ;;
         notify)
@@ -1138,11 +1249,11 @@ manage_services() {
             3) systemctl restart vps-dueguard-bot.service || true; pause "$(prompt bot_restarted)" ;;
             4) systemctl status vps-dueguard-bot.service --no-pager || true; pause ;;
             5)
-                systemctl enable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer || true
+                systemctl enable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer vps-dueguard-traffic.timer || true
                 pause "$(prompt timers_enabled)"
                 ;;
             6)
-                systemctl disable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer || true
+                systemctl disable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer vps-dueguard-traffic.timer || true
                 pause "$(prompt timers_disabled)"
                 ;;
             7) systemctl list-timers --all | grep vps-dueguard || true; pause ;;
@@ -1187,11 +1298,17 @@ show_logs() {
     echo "$(prompt bot_logs)"
     echo "$(prompt daily_logs)"
     echo "$(prompt renewal_logs)"
+    if [ "$LANG_CHOICE" = "zh" ]; then
+        echo "4. 流量预警日志"
+    else
+        echo "4. Traffic alert logs"
+    fi
     read_input "$(msg choose_option)" choice
     case "$choice" in
         1) journalctl -u vps-dueguard-bot.service -n 80 --no-pager || true ;;
         2) journalctl -u vps-dueguard-daily.service -n 80 --no-pager || true ;;
         3) journalctl -u vps-dueguard-renewals.service -n 80 --no-pager || true ;;
+        4) journalctl -u vps-dueguard-traffic.service -n 80 --no-pager || true ;;
         *) echo "$(msg invalid_option)" ;;
     esac
     pause
@@ -1238,7 +1355,7 @@ EOF_UNINSTALL
     systemctl disable --now vps-dueguard-daily.timer >/dev/null 2>&1 || true
     systemctl disable --now vps-dueguard-renewals.timer >/dev/null 2>&1 || true
     cleanup_shell_startup_traces
-    rm -f "$BOT_SERVICE" "$DAILY_SERVICE" "$DAILY_TIMER" "$RENEWALS_SERVICE" "$RENEWALS_TIMER"
+    rm -f "$BOT_SERVICE" "$DAILY_SERVICE" "$DAILY_TIMER" "$RENEWALS_SERVICE" "$RENEWALS_TIMER" "$TRAFFIC_SERVICE" "$TRAFFIC_TIMER"
     rm -f "$BIN_PATH"
     rm -rf "$INSTALL_DIR"
     rm -rf "$RUNTIME_DIR"
@@ -1356,6 +1473,36 @@ set_renewal_days_config() {
     fi
     config_python set-renewal-days "$renewal_days"
     chmod 600 "$CONFIG_FILE"
+}
+
+set_traffic_alert_config() {
+    local enabled="$1"
+    local threshold="$2"
+    local interval="${3:-6}"
+    config_python set-traffic-alert "$enabled" "$threshold" "$interval"
+    chmod 600 "$CONFIG_FILE"
+    regenerate_traffic_timer
+}
+
+regenerate_traffic_timer() {
+    if [ ! -f "$TRAFFIC_TIMER" ]; then
+        return 0
+    fi
+    local traffic_interval
+    traffic_interval="$(read_config_value notifications.traffic_alerts.check_interval_hours)"
+    [ -z "$traffic_interval" ] && traffic_interval="6"
+    cat > "$TRAFFIC_TIMER" <<EOF_TRAFFIC_TIMER_REGEN
+[Unit]
+Description=Run VPS DueGuard traffic alerts
+
+[Timer]
+OnCalendar=*-*-* 00/${traffic_interval}:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF_TRAFFIC_TIMER_REGEN
+    systemctl daemon-reload 2>/dev/null || true
 }
 
 repair_config() {
@@ -1523,8 +1670,8 @@ prompt() {
     case "$LANG_CHOICE:$key" in
         zh:enable_bot) printf "是否启用并启动 Telegram Bot 服务？[y/N]: " ;;
         en:enable_bot) printf "Enable and start Telegram bot service? [y/N]: " ;;
-        zh:enable_timers) printf "是否启用日报和续费提醒定时器？[y/N]: " ;;
-        en:enable_timers) printf "Enable daily report and renewal reminder timers? [y/N]: " ;;
+        zh:enable_timers) printf "是否启用日报、续费提醒和流量预警定时器？[y/N]: " ;;
+        en:enable_timers) printf "Enable daily report, renewal, and traffic alert timers? [y/N]: " ;;
         zh:install_complete_intro) printf "核心环境已安装完成，下面进入首次配置向导。" ;;
         en:install_complete_intro) printf "Core environment is installed. Starting the first-run setup wizard." ;;
         zh:wizard_configure_providers) printf "现在配置服务商？推荐直接配置。[Y/n]: " ;;

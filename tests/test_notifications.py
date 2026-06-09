@@ -10,19 +10,23 @@ from vps_dueguard.notifications import (
     TelegramBot,
     TelegramError,
     build_renewal_alerts,
+    build_traffic_alerts,
+    calculate_traffic_percentage,
+    format_cost_summary,
     format_service_date,
     format_renewals_report,
     format_summary,
     format_traffic_report,
     handle_bot_callback,
     handle_bot_command,
+    parse_price_amount,
     parse_service_date,
     require_telegram,
     run_bot,
 )
 
 
-def service(expires_at: str = "2026-06-16") -> ServiceInfo:
+def service(expires_at: str = "2026-06-16", price: str = "unknown") -> ServiceInfo:
     return ServiceInfo(
         provider="provider-a",
         service_name="Tokyo VPS",
@@ -30,6 +34,7 @@ def service(expires_at: str = "2026-06-16") -> ServiceInfo:
         expires_at=expires_at,
         traffic_usage="20 GB / 1 TB",
         traffic_remaining="1004.00 GB",
+        price=price,
         detail_url="https://example.com/service",
     )
 
@@ -138,6 +143,42 @@ def test_format_reports() -> None:
     assert "1004.00 GB" in format_traffic_report(services)
     assert "<b>VPS Renewals</b>" in format_renewals_report(services, today=date(2026, 6, 2))
     assert "Days left: <b>14</b>" in format_renewals_report(services, today=date(2026, 6, 2))
+
+
+def test_format_summary_includes_price() -> None:
+    services = [service(price="$3.50 USD")]
+
+    summary = format_summary(services)
+
+    assert "Price: $3.50 USD" in summary
+
+
+def test_format_traffic_report_includes_price() -> None:
+    services = [service(price="$5.00 USD")]
+
+    report = format_traffic_report(services)
+
+    assert "Price: $5.00 USD" in report
+
+
+def test_format_renewals_report_includes_price() -> None:
+    services = [service(price="$10.00 USD")]
+
+    report = format_renewals_report(services, today=date(2026, 6, 2))
+
+    assert "Price: $10.00 USD" in report
+
+
+def test_format_reports_hide_unknown_price() -> None:
+    services = [service(price="unknown")]
+
+    summary = format_summary(services)
+    traffic = format_traffic_report(services)
+    renewals = format_renewals_report(services, today=date(2026, 6, 2))
+
+    assert "Price:" not in summary
+    assert "Price:" not in traffic
+    assert "Price:" not in renewals
 
 
 def test_renewals_report_skips_unknown_dates() -> None:
@@ -1186,3 +1227,246 @@ def test_run_bot_ignores_expired_duplicate_callback_ack(monkeypatch) -> None:
         "final result",
     ]
     assert all("Error:" not in message[0] for message in sent)
+
+
+def test_calculate_traffic_percentage() -> None:
+    assert calculate_traffic_percentage("20 GB / 1 TB", "1004.00 GB") is not None
+    pct = calculate_traffic_percentage("20 GB / 1 TB", "1004.00 GB")
+    assert 1.0 < pct < 3.0
+
+    assert calculate_traffic_percentage("800 GB / 1 TB", "224.00 GB") is not None
+    pct = calculate_traffic_percentage("800 GB / 1 TB", "224.00 GB")
+    assert 78.0 < pct < 82.0
+
+    assert calculate_traffic_percentage("unknown", "1004.00 GB") is None
+    assert calculate_traffic_percentage("20 GB / 1 TB", "unknown") is not None
+    assert calculate_traffic_percentage("unknown", "unknown") is None
+
+
+def test_build_traffic_alerts_basic(tmp_path) -> None:
+    state_file = tmp_path / "state.json"
+    svc = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        status="Active",
+        expires_at="2026-12-31",
+        traffic_usage="850 GB / 1 TB",
+        traffic_remaining="174.00 GB",
+        detail_url="https://example.com/service",
+    )
+
+    alerts = build_traffic_alerts([svc], 80, state_file)
+
+    assert len(alerts) == 1
+    assert "Traffic Alert" in alerts[0]
+    assert "85" in alerts[0]
+
+
+def test_build_traffic_alerts_below_threshold(tmp_path) -> None:
+    state_file = tmp_path / "state.json"
+    svc = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        status="Active",
+        expires_at="2026-12-31",
+        traffic_usage="20 GB / 1 TB",
+        traffic_remaining="1004.00 GB",
+        detail_url="https://example.com/service",
+    )
+
+    alerts = build_traffic_alerts([svc], 80, state_file)
+
+    assert alerts == []
+
+
+def test_build_traffic_alerts_deduplication(tmp_path) -> None:
+    state_file = tmp_path / "state.json"
+    svc = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        status="Active",
+        expires_at="2026-12-31",
+        traffic_usage="850 GB / 1 TB",
+        traffic_remaining="174.00 GB",
+        detail_url="https://example.com/service",
+    )
+
+    first = build_traffic_alerts([svc], 80, state_file)
+    second = build_traffic_alerts([svc], 80, state_file)
+
+    assert len(first) == 1
+    assert second == []
+
+
+def test_build_traffic_alerts_new_bracket(tmp_path) -> None:
+    state_file = tmp_path / "state.json"
+    svc_85 = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        status="Active",
+        expires_at="2026-12-31",
+        traffic_usage="850 GB / 1 TB",
+        traffic_remaining="174.00 GB",
+        detail_url="https://example.com/service",
+    )
+    svc_95 = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        status="Active",
+        expires_at="2026-12-31",
+        traffic_usage="950 GB / 1 TB",
+        traffic_remaining="74.00 GB",
+        detail_url="https://example.com/service",
+    )
+
+    first = build_traffic_alerts([svc_85], 80, state_file)
+    second = build_traffic_alerts([svc_95], 80, state_file)
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert "95" in second[0]
+
+
+def test_build_traffic_alerts_unknown_traffic(tmp_path) -> None:
+    state_file = tmp_path / "state.json"
+    svc = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        status="Active",
+        expires_at="2026-12-31",
+        traffic_usage="unknown",
+        traffic_remaining="unknown",
+        detail_url="https://example.com/service",
+    )
+
+    alerts = build_traffic_alerts([svc], 80, state_file)
+
+    assert alerts == []
+
+
+def test_format_cost_summary() -> None:
+    services = [
+        ServiceInfo(
+            provider="provider-a",
+            service_name="Tokyo VPS",
+            status="Active",
+            expires_at="2026-12-31",
+            traffic_usage="20 GB / 1 TB",
+            traffic_remaining="1004.00 GB",
+            price="$3.50 USD",
+            detail_url="https://example.com/1",
+        ),
+        ServiceInfo(
+            provider="provider-a",
+            service_name="Osaka VPS",
+            status="Active",
+            expires_at="2026-12-31",
+            traffic_usage="10 GB / 500 GB",
+            traffic_remaining="502.00 GB",
+            price="$5.00 USD",
+            detail_url="https://example.com/2",
+        ),
+        ServiceInfo(
+            provider="provider-b",
+            service_name="Singapore VPS",
+            status="Active",
+            expires_at="2026-12-31",
+            traffic_usage="50 GB / 2 TB",
+            traffic_remaining="2000.00 GB",
+            price="$10.00 USD",
+            detail_url="https://example.com/3",
+        ),
+    ]
+
+    report = format_cost_summary(services)
+
+    assert "<b>VPS Cost Summary</b>" in report
+    assert "provider-a" in report
+    assert "provider-b" in report
+    assert "$3.50 USD" in report
+    assert "$5.00 USD" in report
+    assert "$10.00 USD" in report
+    assert "Subtotal" in report
+    assert "Grand Total" in report
+
+
+def test_format_cost_summary_no_prices() -> None:
+    services = [
+        ServiceInfo(
+            provider="provider-a",
+            service_name="Tokyo VPS",
+            status="Active",
+            expires_at="2026-12-31",
+            traffic_usage="20 GB / 1 TB",
+            traffic_remaining="1004.00 GB",
+            price="unknown",
+            detail_url="https://example.com/1",
+        ),
+    ]
+
+    report = format_cost_summary(services)
+
+    assert "No price data available" in report
+
+
+def test_format_cost_summary_empty() -> None:
+    report = format_cost_summary([])
+
+    assert "No active services found" in report
+
+
+def test_parse_price_amount() -> None:
+    assert parse_price_amount("$3.50 USD") == (3.5, "USD")
+    assert parse_price_amount("€10.00") == (10.0, "EUR")
+    assert parse_price_amount("£25.00 GBP") == (25.0, "GBP")
+    assert parse_price_amount("¥100.00") == (100.0, "CNY")
+    assert parse_price_amount("CNY 25.00") == (25.0, "CNY")
+    assert parse_price_amount("unknown") == (0.0, "")
+    assert parse_price_amount("") == (0.0, "")
+    assert parse_price_amount("$1,234.56 USD") == (1234.56, "USD")
+
+
+def test_format_cost_summary_escape_html() -> None:
+    services = [
+        ServiceInfo(
+            provider="provider-<a>",
+            service_name="Tokyo & Osaka VPS",
+            status="Active",
+            expires_at="2026-12-31",
+            traffic_usage="20 GB / 1 TB",
+            traffic_remaining="1004.00 GB",
+            price="$3.50 USD",
+            detail_url="https://example.com/1",
+        ),
+    ]
+
+    report = format_cost_summary(services)
+
+    assert "provider-&lt;a&gt;" in report
+    assert "Tokyo &amp; Osaka VPS" in report
+
+
+def test_bot_cost_command(monkeypatch) -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "telegram": {"bot_token": "token", "chat_id": "123"},
+        }
+    )
+
+    def fake_collect_services(config, provider_name=None):
+        return [service(price="$3.50 USD")], []
+
+    monkeypatch.setattr("vps_dueguard.notifications.collect_services", fake_collect_services)
+
+    reply = handle_bot_command("/cost", config, ServiceCache())
+
+    assert "VPS Cost Summary" in reply
+    assert "$3.50 USD" in reply

@@ -48,6 +48,7 @@ class ServiceInfo(BaseModel):
     expires_at: str = "unknown"
     traffic_usage: str = "unknown"
     traffic_remaining: str = "unknown"
+    price: str = "unknown"
     detail_url: str
 
 
@@ -59,6 +60,7 @@ class TelegramConfig(BaseModel):
 class NotificationConfig(BaseModel):
     renewal_days: list[int] = Field(default_factory=lambda: [21, 14, 7, 3])
     daily_report: bool = True
+    traffic_alerts: "TrafficAlertConfig" = Field(default_factory=lambda: TrafficAlertConfig())
     state_file: Path = Path(".vps_dueguard_state.json")
 
     @field_validator("renewal_days")
@@ -68,6 +70,26 @@ class NotificationConfig(BaseModel):
         if any(day < 0 for day in days):
             raise ValueError("renewal_days must be non-negative")
         return days
+
+
+class TrafficAlertConfig(BaseModel):
+    enabled: bool = True
+    threshold: int = 80
+    check_interval_hours: int = 6
+
+    @field_validator("threshold")
+    @classmethod
+    def validate_threshold(cls, value: int) -> int:
+        if not 1 <= value <= 100:
+            raise ValueError("threshold must be between 1 and 100")
+        return value
+
+    @field_validator("check_interval_hours")
+    @classmethod
+    def validate_interval(cls, value: int) -> int:
+        if not 1 <= value <= 168:
+            raise ValueError("check_interval_hours must be between 1 and 168")
+        return value
 
 
 class SessionConfig(BaseModel):

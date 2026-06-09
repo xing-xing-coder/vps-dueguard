@@ -42,9 +42,12 @@ The software is provided as-is under the MIT License. The author is not responsi
 | Unified VPS inventory | List active VPS services across multiple WHMCS/Lagom-like providers |
 | Active services only | Filter out cancelled, terminated, and other inactive services |
 | Traffic overview | Show used/total traffic and remaining traffic when exposed by the provider panel |
+| Traffic alerts | Send Telegram alerts when traffic usage crosses configured threshold intervals |
+| Cost summary | Show per-provider and total cost summary via Telegram or CLI |
+| Price display | Show service price in daily reports, renewal reminders, and traffic queries |
 | Renewal reminders | Send Telegram reminders before configured renewal windows |
 | Daily reports | Send a daily Telegram summary of active VPS services |
-| Telegram Bot queries | Query summaries, traffic, renewals, or one provider from Telegram |
+| Telegram Bot queries | Query summaries, traffic, renewals, cost, or one provider from Telegram |
 | Cookie session cache | Reuse provider login cookies to reduce repeated logins and speed up queries |
 | Menu-first Linux deployment | Install, configure, test, manage services, view logs, and uninstall from one menu |
 | Clean uninstall | Remove project-owned app files, runtime, systemd units, cookies, state, and shortcut |
@@ -127,14 +130,16 @@ The menu supports:
 
 - install or update VPS DueGuard
 - add, view, or rewrite provider configuration
-- test all providers or one selected provider
+- test all providers, one selected provider, or cost summary
 - configure Telegram Bot token and chat ID
 - configure renewal reminder days
+- configure traffic alerts (threshold percentage and check interval)
 - send Telegram test messages
 - send one daily report
 - run one renewal reminder check
+- run one traffic alert check
 - start, stop, restart, and inspect the Telegram Bot service
-- enable or disable daily and renewal timers
+- enable or disable daily, renewal, and traffic alert timers
 - view recent systemd logs
 - uninstall all project-owned files
 
@@ -183,9 +188,10 @@ Available commands:
 
 | Command | Description |
 | --- | --- |
-| `/summary` | Show all active VPS services, renewal dates, and traffic |
+| `/summary` | Show all active VPS services, renewal dates, traffic, and prices |
 | `/traffic` | Show traffic usage and remaining traffic |
-| `/renewals` | Show renewal dates and days left |
+| `/renewals` | Show renewal dates, days left, and prices |
+| `/cost` | Show cost summary across all providers with subtotals and grand total |
 | `/providers` | List configured providers and show provider buttons |
 | `/provider provider-a` | Query a single configured provider |
 | `/refresh` | Force a fresh query and refresh the 5-minute cache |
@@ -216,6 +222,49 @@ Duplicate reminders are prevented by the local state file:
 ```
 
 The deduplication key includes provider, service name, renewal date, and reminder threshold.
+
+## Traffic Alerts
+
+Configure traffic alerts in `config.yaml`:
+
+```yaml
+notifications:
+  traffic_alerts:
+    enabled: true
+    threshold: 80
+    check_interval_hours: 6
+```
+
+| Setting | Description | Default |
+| --- | --- | --- |
+| `enabled` | Enable or disable traffic alerts | `true` |
+| `threshold` | Traffic usage percentage threshold (1-100) | `80` |
+| `check_interval_hours` | Check interval in hours (1-168) | `6` |
+
+When traffic usage crosses a threshold interval (e.g., 80%, 90%, 100%), a Telegram alert is sent. Each interval triggers only one alert, deduplicated via the state file.
+
+You can configure the threshold and check interval from the menu: `Telegram and notification management` → `Edit traffic alert settings`. Changing the interval automatically regenerates the systemd timer.
+
+## Cost Summary
+
+Use the `/cost` command to view a cost summary across all providers. The Telegram report groups services by provider, showing each service's price, provider subtotal, and grand total.
+
+```text
+VPS Cost Summary
+
+provider-a
+  Tokyo VPS: $3.50 USD
+  Osaka VPS: $5.00 USD
+  Subtotal: $8.50 USD
+
+provider-b
+  Singapore VPS: $10.00 USD
+  Subtotal: $10.00 USD
+
+Grand Total: $18.50 USD
+```
+
+Price data is automatically extracted from the WHMCS service list and service detail pages. If a provider panel does not expose pricing, the price field shows `unknown`.
 
 ## Cookie Sessions
 
@@ -256,6 +305,7 @@ The installer creates:
 | `vps-dueguard-bot.service` | Runs the Telegram long-polling bot |
 | `vps-dueguard-daily.timer` | Runs the daily Telegram report |
 | `vps-dueguard-renewals.timer` | Runs renewal reminder checks |
+| `vps-dueguard-traffic.timer` | Runs traffic alert checks |
 
 You can manage these from the menu or manually:
 
@@ -271,6 +321,7 @@ View logs:
 sudo journalctl -u vps-dueguard-bot.service -n 100 --no-pager
 sudo journalctl -u vps-dueguard-daily.service -n 100 --no-pager
 sudo journalctl -u vps-dueguard-renewals.service -n 100 --no-pager
+sudo journalctl -u vps-dueguard-traffic.service -n 100 --no-pager
 ```
 
 ## Uninstall
@@ -326,9 +377,12 @@ Direct Python commands are available for development and debugging:
 python -m vps_dueguard list
 python -m vps_dueguard list --provider provider-a
 python -m vps_dueguard list --json
+python -m vps_dueguard cost
+python -m vps_dueguard cost --json
 python -m vps_dueguard notify test
 python -m vps_dueguard notify daily
 python -m vps_dueguard notify renewals
+python -m vps_dueguard notify traffic-alerts
 python -m vps_dueguard bot
 ```
 

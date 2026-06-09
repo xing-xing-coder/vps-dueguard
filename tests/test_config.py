@@ -124,6 +124,8 @@ def test_notification_defaults() -> None:
     assert config.telegram is None
     assert config.notifications.renewal_days == [21, 14, 7, 3]
     assert config.notifications.daily_report is True
+    assert config.notifications.traffic_alerts.enabled is True
+    assert config.notifications.traffic_alerts.threshold == 80
     assert str(config.notifications.state_file) == ".vps_dueguard_state.json"
     assert config.sessions.enabled is True
     assert str(config.sessions.session_dir) == ".vps_sessions"
@@ -167,3 +169,82 @@ def test_session_config() -> None:
 
     assert config.sessions.enabled is False
     assert str(config.sessions.session_dir) == "sessions"
+
+
+def test_traffic_alert_config() -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ],
+            "notifications": {
+                "traffic_alerts": {
+                    "enabled": False,
+                    "threshold": 90,
+                }
+            },
+        }
+    )
+
+    assert config.notifications.traffic_alerts.enabled is False
+    assert config.notifications.traffic_alerts.threshold == 90
+
+
+def test_traffic_alert_config_invalid_threshold() -> None:
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {
+                "providers": [
+                    {
+                        "name": "provider-a",
+                        "base_url": "https://provider-a.example",
+                        "username": "user@example.com",
+                        "password": "secret",
+                    }
+                ],
+                "notifications": {
+                    "traffic_alerts": {
+                        "threshold": 150,
+                    }
+                },
+            }
+        )
+
+
+def test_service_info_price_field() -> None:
+    config = AppConfig.model_validate(
+        {
+            "providers": [
+                {
+                    "name": "provider-a",
+                    "base_url": "https://provider-a.example",
+                    "username": "user@example.com",
+                    "password": "secret",
+                }
+            ]
+        }
+    )
+
+    from vps_dueguard.models import ServiceInfo
+
+    svc = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        detail_url="https://example.com",
+        price="$3.50 USD",
+    )
+
+    assert svc.price == "$3.50 USD"
+
+    svc_default = ServiceInfo(
+        provider="provider-a",
+        service_name="Tokyo VPS",
+        detail_url="https://example.com",
+    )
+
+    assert svc_default.price == "unknown"

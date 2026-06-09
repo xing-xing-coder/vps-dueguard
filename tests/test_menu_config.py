@@ -7,12 +7,14 @@ from vps_dueguard.menu_config import (
     current_providers,
     current_renewal_days,
     current_telegram,
+    current_traffic_alerts,
     dump_providers_yaml,
     load_menu_config,
     normalize_renewal_days,
     repair_menu_config,
     set_renewal_days_config,
     set_telegram_config,
+    set_traffic_alert_config,
     write_menu_config,
 )
 from vps_dueguard.models import load_config
@@ -202,3 +204,120 @@ def test_normalize_renewal_days_accepts_only_comma_separated_values() -> None:
 
     with pytest.raises(ValueError):
         normalize_renewal_days("[21,14,7]")
+
+
+def test_write_menu_config_includes_traffic_alerts(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    providers_yaml = """  - name: provider-a
+    base_url: https://provider-a.example/
+    username: user@example.com
+    password: secret
+"""
+
+    write_menu_config(config_file, providers_yaml, "token", "123", "21,14,7,3")
+    data = load_menu_config(config_file)
+
+    alerts = current_traffic_alerts(data)
+    assert alerts["enabled"] is True
+    assert alerts["threshold"] == 80
+
+
+def test_set_traffic_alert_config_preserves_existing_config(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    providers_yaml = """  - name: provider-a
+    base_url: https://provider-a.example/
+    username: user-a@example.com
+    password: secret-a
+"""
+
+    write_menu_config(config_file, providers_yaml, "token", "123", "21,14")
+    data = load_menu_config(config_file)
+    set_traffic_alert_config(config_file, data, True, 90)
+    data = load_menu_config(config_file)
+
+    assert len(current_providers(data)) == 1
+    assert current_telegram(data) == {"bot_token": "token", "chat_id": "123"}
+    assert current_renewal_days(data) == [21, 14]
+    alerts = current_traffic_alerts(data)
+    assert alerts["enabled"] is True
+    assert alerts["threshold"] == 90
+    assert alerts["check_interval_hours"] == 6
+
+
+def test_set_traffic_alert_config_disable(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+
+    write_menu_config(config_file, "", "token", "123", "21,14")
+    data = load_menu_config(config_file)
+    set_traffic_alert_config(config_file, data, False, 80)
+    data = load_menu_config(config_file)
+
+    alerts = current_traffic_alerts(data)
+    assert alerts["enabled"] is False
+    assert alerts["threshold"] == 80
+    assert alerts["check_interval_hours"] == 6
+
+
+def test_add_provider_preserves_traffic_alerts(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+
+    write_menu_config(config_file, "", "token", "123", "21,14")
+    data = load_menu_config(config_file)
+    set_traffic_alert_config(config_file, data, True, 70)
+    data = load_menu_config(config_file)
+    add_provider_config(config_file, data, "provider-b", "https://provider-b.example/", "user@b.com", "pass")
+    data = load_menu_config(config_file)
+
+    alerts = current_traffic_alerts(data)
+    assert alerts["enabled"] is True
+    assert alerts["threshold"] == 70
+    assert alerts["check_interval_hours"] == 6
+
+
+def test_current_traffic_alerts_defaults() -> None:
+    data: dict = {}
+    alerts = current_traffic_alerts(data)
+    assert alerts["enabled"] is True
+    assert alerts["threshold"] == 80
+
+
+def test_current_traffic_alerts_from_data() -> None:
+    data = {
+        "notifications": {
+            "traffic_alerts": {
+                "enabled": False,
+                "threshold": 95,
+            }
+        }
+    }
+    alerts = current_traffic_alerts(data)
+    assert alerts["enabled"] is False
+    assert alerts["threshold"] == 95
+
+
+def test_current_traffic_alerts_with_interval() -> None:
+    data = {
+        "notifications": {
+            "traffic_alerts": {
+                "enabled": True,
+                "threshold": 80,
+                "check_interval_hours": 12,
+            }
+        }
+    }
+    alerts = current_traffic_alerts(data)
+    assert alerts["check_interval_hours"] == 12
+
+
+def test_set_traffic_alert_config_with_interval(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+
+    write_menu_config(config_file, "", "token", "123", "21,14")
+    data = load_menu_config(config_file)
+    set_traffic_alert_config(config_file, data, True, 80, 12)
+    data = load_menu_config(config_file)
+
+    alerts = current_traffic_alerts(data)
+    assert alerts["enabled"] is True
+    assert alerts["threshold"] == 80
+    assert alerts["check_interval_hours"] == 12

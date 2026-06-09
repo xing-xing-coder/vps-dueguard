@@ -13,6 +13,7 @@ import httpx
 
 from .client import ProviderError, fetch_provider_services
 from .models import AppConfig, ServiceInfo, TelegramConfig, load_config
+from .parser import parse_size_to_mb
 
 
 class TelegramError(RuntimeError):
@@ -23,6 +24,7 @@ BOT_COMMANDS = [
     ("summary", "All active VPS services"),
     ("traffic", "Traffic usage and remaining traffic"),
     ("renewals", "Renewal dates and days left"),
+    ("cost", "Cost summary across providers"),
     ("providers", "List configured providers"),
     ("provider", "Query one provider, e.g. /provider provider-a"),
     ("refresh", "Refresh cached VPS data"),
@@ -141,7 +143,7 @@ def format_summary(services: list[ServiceInfo], errors: list[str] | None = None)
     lines = ["<b>VPS Summary</b>"]
     if services:
         for service in services:
-            lines.extend(_service_block(service, include_traffic=True, include_expiry=True))
+            lines.extend(_service_block(service, include_traffic=True, include_expiry=True, include_price=True))
     elif errors:
         lines.extend(["", "No active services were loaded."])
     else:
@@ -154,7 +156,7 @@ def format_traffic_report(services: list[ServiceInfo], errors: list[str] | None 
     lines = ["<b>VPS Traffic</b>"]
     if services:
         for service in services:
-            lines.extend(_service_block(service, include_traffic=True, include_expiry=False))
+            lines.extend(_service_block(service, include_traffic=True, include_expiry=False, include_price=True))
     elif errors:
         lines.extend(["", "No traffic data was loaded."])
     else:
@@ -173,14 +175,15 @@ def format_renewals_report(services: list[ServiceInfo], errors: list[str] | None
         lines.append("")
         for service, expires_at in dated:
             days = (expires_at - today).days
-            lines.extend(
-                [
-                    f"<b>{_html(service.provider)}</b> - {_html(service.service_name)}",
-                    f"Expires: {_html(expires_at.isoformat())}",
-                    f"Days left: <b>{days}</b>",
-                    "",
-                ]
-            )
+            block = [
+                f"<b>{_html(service.provider)}</b> - {_html(service.service_name)}",
+                f"Expires: {_html(expires_at.isoformat())}",
+                f"Days left: <b>{days}</b>",
+            ]
+            if service.price and service.price != "unknown":
+                block.append(f"Price: {_html(service.price)}")
+            block.append("")
+            lines.extend(block)
     elif errors:
         lines.extend(["", "No renewal dates were loaded."])
     else:
@@ -195,6 +198,7 @@ def format_help() -> str:
         "/summary - all active VPS services\n"
         "/traffic - traffic usage and remaining traffic\n"
         "/renewals - renewal dates and days left\n"
+        "/cost - cost summary across providers\n"
         "/providers - list configured providers\n"
         "/provider &lt;name&gt; - query one provider\n"
         "/refresh - refresh cached VPS data"
@@ -221,6 +225,9 @@ def main_menu_markup() -> dict[str, object]:
             ],
             [
                 {"text": "Renewals", "callback_data": "cmd:renewals"},
+                {"text": "Cost", "callback_data": "cmd:cost"},
+            ],
+            [
                 {"text": "Providers", "callback_data": "cmd:providers"},
             ],
             [{"text": "Refresh", "callback_data": "cmd:refresh"}],
@@ -243,6 +250,8 @@ def reply_markup_for_command(command: str, config: AppConfig) -> dict[str, objec
         return main_menu_markup()
     if name == "/providers":
         return providers_menu_markup(config) if config.providers else main_menu_markup()
+    if name == "/cost":
+        return main_menu_markup()
     return None
 
 
@@ -273,16 +282,211 @@ def build_renewal_alerts(
         if key in sent:
             continue
         sent.add(key)
-        alerts.append(
-            "<b>Renewal Reminder</b>\n"
-            f"{_html(service.provider)} - {_html(service.service_name)}\n"
-            f"Expires: {_html(expires_at.isoformat())} ({days_left} days left)\n"
-            f"Traffic: {_html(service.traffic_usage)}, remaining {_html(service.traffic_remaining)}"
-        )
+        alert_lines = [
+            "<b>Renewal Reminder</b>",
+            f"{_html(service.provider)} - {_html(service.service_name)}",
+            f"Expires: {_html(expires_at.isoformat())} ({days_left} days left)",
+            f"Traffic: {_html(service.traffic_usage)}, remaining {_html(service.traffic_remaining)}",
+        ]
+        if service.price and service.price != "unknown":
+            alert_lines.append(f"Price: {_html(service.price)}")
+        alerts.append("\n".join(alert_lines))
 
     state["sent_renewals"] = sorted(sent)
     _save_state(state_path, state)
     return alerts
+
+
+def calculate_traffic_percentage(usage_str: str, remaining_str: str) -> float | None:
+    if usage_str == "unknown":
+        return None
+
+    parts = usage_str.split("/")
+    if len(parts) != 2:
+        return None
+
+    used = parse_size_to_mb(parts[0].strip())
+    total_text = parts[1].strip()
+    total = parse_size_to_mb(total_text)
+
+    if total is None or total <= 0:
+        return None
+
+    if used is not None:
+        return (used / total) * 100
+
+    if remaining_str != "unknown":
+        remaining = parse_size_to_mb(remaining_str)
+        if remaining is not None:
+            return ((total - remaining) / total) * 100
+
+    return None
+
+
+def build_traffic_alerts(
+    services: list[ServiceInfo],
+    threshold: int,
+    state_path: Path,
+) -> list[str]:
+    state = _load_state(state_path)
+    sent: set[str] = set(state.get("sent_traffic_alerts") or [])
+    alerts: list[str] = []
+
+    bracket = _traffic_bracket(threshold)
+
+    for service in services:
+        percentage = calculate_traffic_percentage(service.traffic_usage, service.traffic_remaining)
+        if percentage is None:
+            continue
+
+        current_bracket = _traffic_bracket(int(percentage))
+        if current_bracket < bracket:
+            continue
+
+        key = _traffic_alert_key(service, current_bracket)
+        if key in sent:
+            continue
+        sent.add(key)
+        alerts.append(
+            "<b>Traffic Alert</b>\n"
+            f"{_html(service.provider)} - {_html(service.service_name)}\n"
+            f"Traffic usage: <b>{percentage:.1f}%</b>\n"
+            f"Used: {_html(service.traffic_usage)}\n"
+            f"Remaining: {_html(service.traffic_remaining)}"
+        )
+
+    state["sent_traffic_alerts"] = sorted(sent)
+    _save_state(state_path, state)
+    return alerts
+
+
+def _traffic_bracket(percentage: int) -> int:
+    if percentage >= 100:
+        return 100
+    if percentage >= 90:
+        return 90
+    if percentage >= 80:
+        return 80
+    if percentage >= 70:
+        return 70
+    if percentage >= 60:
+        return 60
+    if percentage >= 50:
+        return 50
+    return 0
+
+
+def _traffic_alert_key(service: ServiceInfo, bracket: int) -> str:
+    return f"{service.provider}|{service.service_name}|{bracket}"
+
+
+def format_cost_summary(services: list[ServiceInfo], errors: list[str] | None = None) -> str:
+    lines = ["<b>VPS Cost Summary</b>"]
+
+    if not services:
+        if errors:
+            lines.extend(["", "No cost data was loaded."])
+        else:
+            lines.extend(["", "No active services found."])
+        lines.extend(_error_lines(errors))
+        return _join_lines(lines)
+
+    providers: dict[str, list[ServiceInfo]] = {}
+    for svc in services:
+        providers.setdefault(svc.provider, []).append(svc)
+
+    grand_total = 0.0
+    grand_currency = ""
+    has_any_price = False
+
+    for provider_name, provider_services in sorted(providers.items()):
+        lines.extend(["", f"<b>{_html(provider_name)}</b>"])
+        provider_total = 0.0
+        provider_currency = ""
+
+        for svc in provider_services:
+            amount, currency = parse_price_amount(svc.price)
+            if amount > 0:
+                has_any_price = True
+                provider_total += amount
+                provider_currency = currency
+                lines.append(f"  {_html(svc.service_name)}: {_html(svc.price)}")
+            else:
+                lines.append(f"  {_html(svc.service_name)}: {_html(svc.price)}")
+
+        if provider_total > 0:
+            lines.append(f"  <b>Subtotal: {_format_amount(provider_total, provider_currency)}</b>")
+            grand_total += provider_total
+            grand_currency = provider_currency
+
+    if grand_total > 0:
+        lines.extend(["", f"<b>Grand Total: {_format_amount(grand_total, grand_currency)}</b>"])
+    elif not has_any_price:
+        lines.extend(["", "No price data available from providers."])
+
+    lines.extend(_error_lines(errors))
+    return _join_lines(lines)
+
+
+def parse_price_amount(price_str: str) -> tuple[float, str]:
+    if not price_str or price_str == "unknown":
+        return 0.0, ""
+
+    cleaned = price_str.strip()
+
+    symbol_map = {
+        "$": "USD",
+        "€": "EUR",
+        "£": "GBP",
+        "¥": "CNY",
+    }
+
+    for symbol, code in symbol_map.items():
+        if symbol in cleaned:
+            match = re.search(rf"{re.escape(symbol)}\s*([0-9][0-9.,]*)", cleaned)
+            if match:
+                amount = _parse_number(match.group(1))
+                return amount, code
+
+    for code in ("USD", "EUR", "GBP", "CNY", "RMB", "AUD", "CAD", "JPY"):
+        if code.upper() in cleaned.upper():
+            match = re.search(rf"{code}\s*([0-9][0-9.,]*)", cleaned, re.I)
+            if match:
+                amount = _parse_number(match.group(1))
+                return amount, code if code != "RMB" else "CNY"
+            match = re.search(rf"([0-9][0-9.,]*)\s*{code}", cleaned, re.I)
+            if match:
+                amount = _parse_number(match.group(1))
+                return amount, code if code != "RMB" else "CNY"
+
+    match = re.search(r"([0-9][0-9.,]*)", cleaned)
+    if match:
+        return _parse_number(match.group(1)), ""
+
+    return 0.0, ""
+
+
+def _parse_number(text: str) -> float:
+    cleaned = text.replace(",", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def _format_amount(amount: float, currency: str) -> str:
+    symbol_map = {
+        "USD": "$",
+        "EUR": "€",
+        "GBP": "£",
+        "CNY": "¥",
+    }
+    symbol = symbol_map.get(currency, "")
+    if symbol:
+        return f"{symbol}{amount:.2f} {currency}"
+    if currency:
+        return f"{currency} {amount:.2f}"
+    return f"{amount:.2f}"
 
 
 def parse_service_date(value: str) -> date | None:
@@ -358,7 +562,7 @@ class CallbackDeduper:
 def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | None = None) -> str:
     parts = command.strip().split()
     name = _command_name(command)
-    known_commands = {"/summary", "/traffic", "/renewals", "/providers", "/provider", "/refresh", "/help", "/start"}
+    known_commands = {"/summary", "/traffic", "/renewals", "/cost", "/providers", "/provider", "/refresh", "/help", "/start"}
 
     if name in {"/help", "/start"}:
         return format_help()
@@ -397,6 +601,8 @@ def handle_bot_command(command: str, config: AppConfig, cache: ServiceCache | No
         return format_traffic_report(services, errors)
     if name == "/renewals":
         return format_renewals_report(services, errors)
+    if name == "/cost":
+        return format_cost_summary(services, errors)
     if name == "/provider":
         return format_summary(services, errors)
     return "Unknown command. Send /help for available commands."
@@ -426,7 +632,7 @@ def callback_needs_progress(data: str) -> bool:
         return True
     if not data.startswith("cmd:"):
         return False
-    return data.removeprefix("cmd:") in {"summary", "traffic", "renewals", "refresh"}
+    return data.removeprefix("cmd:") in {"summary", "traffic", "renewals", "cost", "refresh"}
 
 
 def callback_progress_message(data: str) -> str:
@@ -544,7 +750,7 @@ def run_bot(
                 time.sleep(1)
 
 
-def _service_block(service: ServiceInfo, include_traffic: bool, include_expiry: bool) -> list[str]:
+def _service_block(service: ServiceInfo, include_traffic: bool, include_expiry: bool, include_price: bool = False) -> list[str]:
     lines = [
         "",
         f"<b>{_html(service.provider)}</b> - {_html(service.service_name)}",
@@ -555,6 +761,8 @@ def _service_block(service: ServiceInfo, include_traffic: bool, include_expiry: 
     if include_traffic:
         lines.append(f"Traffic: {_html(service.traffic_usage)}")
         lines.append(f"Remaining: {_html(service.traffic_remaining)}")
+    if include_price and service.price and service.price != "unknown":
+        lines.append(f"Price: {_html(service.price)}")
     return lines
 
 

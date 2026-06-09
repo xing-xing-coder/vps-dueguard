@@ -15,7 +15,9 @@ from .notifications import (
     TelegramBot,
     TelegramError,
     build_renewal_alerts,
+    build_traffic_alerts,
     collect_services,
+    format_cost_summary,
     format_summary,
     format_service_date,
     normalize_service_dates,
@@ -130,6 +132,33 @@ def notify_renewals(
     console.print(f"[green]Renewal reminders sent: {len(alerts)}[/green]")
 
 
+@notify_app.command("traffic-alerts")
+def notify_traffic_alerts(
+    config: Annotated[Path, typer.Option("--config", "-c", help="Path to config YAML.")] = Path("config.yaml"),
+) -> None:
+    """Send traffic usage alerts to Telegram when threshold is exceeded."""
+    app_config = _load_app_config(config)
+    traffic_config = app_config.notifications.traffic_alerts
+    if not traffic_config.enabled:
+        console.print("[yellow]Traffic alerts are disabled in config.[/yellow]")
+        return
+    try:
+        services, errors = collect_services(app_config)
+        alerts = build_traffic_alerts(
+            services,
+            traffic_config.threshold,
+            app_config.notifications.state_file,
+        )
+        with TelegramBot(require_telegram(app_config)) as bot:
+            for alert in alerts:
+                bot.send_message(alert)
+            if errors:
+                bot.send_message(format_summary([], errors))
+    except (TelegramError, Exception) as exc:
+        _fail(str(exc))
+    console.print(f"[green]Traffic alerts sent: {len(alerts)}[/green]")
+
+
 @app.command("bot")
 def bot(
     config: Annotated[Path, typer.Option("--config", "-c", help="Path to config YAML.")] = Path("config.yaml"),
@@ -145,6 +174,99 @@ def bot(
         _fail(str(exc))
 
 
+@app.command("cost")
+def cost_summary(
+    config: Annotated[Path, typer.Option("--config", "-c", help="Path to config YAML.")] = Path("config.yaml"),
+    provider: Annotated[str | None, typer.Option("--provider", "-p", help="Only query one provider.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output JSON instead of a table.")] = False,
+) -> None:
+    """Show cost summary across providers."""
+    try:
+        app_config = load_config(config)
+        providers = app_config.provider_subset(provider)
+    except (FileNotFoundError, ValueError, ValidationError) as exc:
+        _fail(str(exc))
+
+    all_services: list[ServiceInfo] = []
+    errors: list[str] = []
+
+    for provider_config in providers:
+        try:
+            all_services.extend(fetch_provider_services(provider_config, app_config.sessions))
+        except ProviderError as exc:
+            errors.append(str(exc))
+        except Exception as exc:
+            errors.append(f"{provider_config.name}: {exc}")
+
+    all_services = normalize_service_dates(all_services)
+
+    if json_output:
+        from .notifications import parse_price_amount
+
+        providers_costs: dict[str, dict[str, object]] = {}
+        for svc in all_services:
+            if svc.provider not in providers_costs:
+                providers_costs[svc.provider] = {"services": [], "total": 0.0, "currency": ""}
+            amount, currency = parse_price_amount(svc.price)
+            providers_costs[svc.provider]["services"].append({
+                "service_name": svc.service_name,
+                "price": svc.price,
+                "amount": amount,
+                "currency": currency,
+            })
+            if amount > 0:
+                providers_costs[svc.provider]["total"] = float(providers_costs[svc.provider]["total"]) + amount
+                if currency:
+                    providers_costs[svc.provider]["currency"] = currency
+
+        grand_total = sum(float(p["total"]) for p in providers_costs.values())
+        payload = {
+            "providers": providers_costs,
+            "grand_total": grand_total,
+            "errors": errors,
+        }
+        console.print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        from .notifications import parse_price_amount
+
+        table = Table(title="VPS Cost Summary")
+        table.add_column("Provider")
+        table.add_column("Service")
+        table.add_column("Price")
+
+        provider_groups: dict[str, list[ServiceInfo]] = {}
+        for svc in all_services:
+            provider_groups.setdefault(svc.provider, []).append(svc)
+
+        grand_total = 0.0
+        grand_currency = ""
+
+        for provider_name, services in sorted(provider_groups.items()):
+            provider_total = 0.0
+            provider_currency = ""
+            for svc in services:
+                amount, currency = parse_price_amount(svc.price)
+                if amount > 0:
+                    provider_total += amount
+                    provider_currency = currency
+                table.add_row(svc.provider, svc.service_name, svc.price)
+            if provider_total > 0:
+                table.add_row("", f"[bold]Subtotal[/bold]", f"[bold]{provider_total:.2f} {provider_currency}[/bold]")
+                grand_total += provider_total
+                grand_currency = provider_currency
+
+        if grand_total > 0:
+            table.add_row("", f"[bold]Grand Total[/bold]", f"[bold]{grand_total:.2f} {grand_currency}[/bold]")
+
+        if all_services:
+            console.print(table)
+        else:
+            console.print("[yellow]No services found.[/yellow]")
+
+        for error in errors:
+            console.print(f"[red]Error:[/red] {error}")
+
+
 def _print_table(services: list[ServiceInfo]) -> None:
     table = Table(title="VPS Services")
     table.add_column("Provider")
@@ -153,6 +275,7 @@ def _print_table(services: list[ServiceInfo]) -> None:
     table.add_column("Expires")
     table.add_column("Traffic Used / Total")
     table.add_column("Traffic Remaining")
+    table.add_column("Price")
 
     for service in services:
         table.add_row(
@@ -162,6 +285,7 @@ def _print_table(services: list[ServiceInfo]) -> None:
             format_service_date(service.expires_at),
             service.traffic_usage,
             service.traffic_remaining,
+            service.price,
         )
 
     if services:

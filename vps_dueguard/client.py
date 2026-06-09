@@ -16,6 +16,7 @@ from .parser import (
     is_active_status,
     parse_service_detail,
     parse_services,
+    extract_price_from_text,
 )
 
 
@@ -115,18 +116,21 @@ class WHMCSClient:
             expires_at = service.expires_at
             traffic_usage = service.traffic_usage
             traffic_remaining = service.traffic_remaining
+            price = service.price
 
             if service.detail_url:
                 try:
                     detail = self.client.get(self._english_url(service.detail_url))
                     detail.raise_for_status()
-                    detail_expiry, detail_usage, detail_remaining = parse_service_detail(detail.text)
+                    detail_expiry, detail_usage, detail_remaining, detail_price = parse_service_detail(detail.text)
                     if detail_expiry != "unknown" and (expires_at == "unknown" or re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", detail_expiry)):
                         expires_at = detail_expiry
                     if detail_usage != "unknown":
                         traffic_usage = detail_usage
                     if detail_remaining != "unknown":
                         traffic_remaining = detail_remaining
+                    if price == "unknown" and detail_price != "unknown":
+                        price = detail_price
                 except httpx.HTTPError:
                     pass
 
@@ -138,6 +142,7 @@ class WHMCSClient:
                     expires_at=expires_at,
                     traffic_usage=traffic_usage,
                     traffic_remaining=traffic_remaining,
+                    price=price,
                     detail_url=service.detail_url,
                 )
             )
@@ -190,6 +195,7 @@ class WHMCSClient:
                     expires_at=expires_at,
                     traffic_usage="unknown",
                     traffic_remaining="unknown",
+                    price="unknown",
                     detail_url=detail_url,
                 )
             )

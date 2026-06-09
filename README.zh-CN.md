@@ -42,9 +42,12 @@ WHMCS、Lagom、Telegram、Python 以及本文中提到的服务或品牌名称�
 | 多商户统一资产 | 跨多个 WHMCS/Lagom 类服务商列出有效 VPS |
 | 只显示有效服务 | 过滤已取消、已终止等非活跃服务 |
 | 流量信息汇总 | 在面板公开相关信息时显示已用/总量和剩余流量 |
+| 流量预警 | 流量使用达到配置阈值时发送 Telegram 预警，支持阈值和检查间隔配置 |
+| 费用汇总 | 按服务商或全部汇总 VPS 费用，支持 Telegram 和 CLI 查询 |
+| 价格展示 | 日报、续费提醒、流量查询中自动显示服务价格 |
 | 续费提醒 | 在配置的续费提醒窗口内发送 Telegram 提醒 |
 | 每日报告 | 每日发送有效 VPS 的 Telegram 汇总 |
-| Telegram Bot 查询 | 通过 Telegram 查询汇总、流量、续费或单个服务商 |
+| Telegram Bot 查询 | 通过 Telegram 查询汇总、流量、续费、费用或单个服务商 |
 | Cookie 会话缓存 | 复用服务商登录 Cookie，减少重复登录并加快查询 |
 | 菜单式 Linux 部署 | 通过一个菜单完成安装、配置、测试、服务管理、日志和卸载 |
 | 干净卸载 | 删除项目专属程序文件、运行时、systemd units、Cookie、状态和快捷命令 |
@@ -127,14 +130,16 @@ VPS DueGuard 设置
 
 - 安装或更新 VPS DueGuard
 - 添加、查看或重写服务商配置
-- 测试全部服务商或单个服务商
+- 测试全部服务商、单个服务商或费用汇总
 - 配置 Telegram Bot Token 和 Chat ID
 - 配置续费提醒天数
+- 配置流量预警（阈值百分比和检查间隔）
 - 发送 Telegram 测试消息
 - 发送一次每日报告
 - 执行一次续费提醒检查
+- 执行一次流量预警检查
 - 启动、停止、重启和查看 Telegram Bot 服务
-- 启用或禁用日报和续费提醒定时器
+- 启用或禁用日报、续费提醒和流量预警定时器
 - 查看最近的 systemd 日志
 - 卸载全部项目专属文件
 
@@ -183,9 +188,10 @@ telegram:
 
 | 指令 | 说明 |
 | --- | --- |
-| `/summary` | 显示全部有效 VPS、续费日期和流量 |
+| `/summary` | 显示全部有效 VPS、续费日期、流量和价格 |
 | `/traffic` | 显示流量使用和剩余流量 |
-| `/renewals` | 显示续费日期和剩余天数 |
+| `/renewals` | 显示续费日期、剩余天数和价格 |
+| `/cost` | 显示全部服务商费用汇总，按服务商小计和总计 |
 | `/providers` | 列出已配置服务商并显示服务商按钮 |
 | `/provider provider-a` | 查询单个已配置服务商 |
 | `/refresh` | 强制重新查询并刷新 5 分钟缓存 |
@@ -216,6 +222,49 @@ Bot 会在 `config.yaml` 变化时重新加载配置。如果你在菜单中修�
 ```
 
 去重键包含服务商、服务名、续费日期和提醒阈值。
+
+## 流量预警
+
+在 `config.yaml` 中配置流量预警：
+
+```yaml
+notifications:
+  traffic_alerts:
+    enabled: true
+    threshold: 80
+    check_interval_hours: 6
+```
+
+| 配置项 | 说明 | 默认值 |
+| --- | --- | --- |
+| `enabled` | 是否启用流量预警 | `true` |
+| `threshold` | 流量使用百分比阈值（1-100） | `80` |
+| `check_interval_hours` | 检查间隔，单位小时（1-168） | `6` |
+
+当流量使用跨越阈值区间（如 80%、90%、100%）时发送 Telegram 预警。同一区间只提醒一次，使用状态文件去重。
+
+可在菜单中通过 `Telegram 和提醒管理` → `修改流量预警设置` 配置阈值和检查间隔。修改间隔后会自动重新生成 systemd 定时器。
+
+## 费用汇总
+
+使用 `/cost` 指令查看全部服务商的费用汇总。Telegram 报告会按服务商分组显示每台 VPS 的价格、服务商小计和总费用。
+
+```text
+VPS Cost Summary
+
+provider-a
+  Tokyo VPS: $3.50 USD
+  Osaka VPS: $5.00 USD
+  Subtotal: $8.50 USD
+
+provider-b
+  Singapore VPS: $10.00 USD
+  Subtotal: $10.00 USD
+
+Grand Total: $18.50 USD
+```
+
+价格数据从 WHMCS 面板的服务列表和服务详情页自动提取。如果面板未公开价格信息，该服务的价格字段显示为 `unknown`。
 
 ## Cookie 会话
 
@@ -256,6 +305,7 @@ sessions:
 | `vps-dueguard-bot.service` | 运行 Telegram 长轮询 Bot |
 | `vps-dueguard-daily.timer` | 运行每日 Telegram 报告 |
 | `vps-dueguard-renewals.timer` | 运行续费提醒检查 |
+| `vps-dueguard-traffic.timer` | 运行流量预警检查 |
 
 可以从菜单管理，也可以手动执行：
 
@@ -271,6 +321,7 @@ sudo systemctl list-timers 'vps-dueguard-*'
 sudo journalctl -u vps-dueguard-bot.service -n 100 --no-pager
 sudo journalctl -u vps-dueguard-daily.service -n 100 --no-pager
 sudo journalctl -u vps-dueguard-renewals.service -n 100 --no-pager
+sudo journalctl -u vps-dueguard-traffic.service -n 100 --no-pager
 ```
 
 ## 卸载
@@ -326,9 +377,12 @@ python -m pytest
 python -m vps_dueguard list
 python -m vps_dueguard list --provider provider-a
 python -m vps_dueguard list --json
+python -m vps_dueguard cost
+python -m vps_dueguard cost --json
 python -m vps_dueguard notify test
 python -m vps_dueguard notify daily
 python -m vps_dueguard notify renewals
+python -m vps_dueguard notify traffic-alerts
 python -m vps_dueguard bot
 ```
 

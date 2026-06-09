@@ -16,6 +16,10 @@ telegram:
 notifications:
   renewal_days: [21, 14, 7, 3]
   daily_report: true
+  traffic_alerts:
+    enabled: true
+    threshold: 80
+    check_interval_hours: 6
   state_file: ".vps_dueguard_state.json"
 
 sessions:

@@ -33,6 +33,15 @@ EXPIRY_LABELS = (
     "due date",
 )
 
+PRICE_LABELS = (
+    "recurring amount",
+    "amount",
+    "price",
+    "cost",
+    "billing amount",
+    "next due",
+)
+
 TRAFFIC_LABELS = ("traffic", "bandwidth", "data")
 
 
@@ -43,6 +52,7 @@ class ParsedService:
     expires_at: str
     traffic_usage: str
     traffic_remaining: str
+    price: str
     detail_url: str
 
 
@@ -102,11 +112,12 @@ def parse_services(html: str, base_url: str) -> list[ParsedService]:
     return services or _parse_services_from_cards(soup, base_url)
 
 
-def parse_service_detail(html: str) -> tuple[str, str, str]:
+def parse_service_detail(html: str) -> tuple[str, str, str, str]:
     soup = soup_from_html(html)
     expires_at = find_labeled_value(soup, EXPIRY_LABELS) or "unknown"
     traffic_usage, traffic_remaining = find_traffic_usage_and_remaining(soup)
-    return _date_or_unknown(expires_at), traffic_usage, traffic_remaining
+    price = extract_price_from_detail(soup)
+    return _date_or_unknown(expires_at), traffic_usage, traffic_remaining, price
 
 
 def find_labeled_value(soup: BeautifulSoup, labels: tuple[str, ...]) -> str | None:
@@ -148,6 +159,28 @@ def find_traffic_usage_and_remaining(soup: BeautifulSoup) -> tuple[str, str]:
             return usage, remaining
 
     return _extract_traffic_values(_clean_text(soup))
+
+
+def extract_price_from_detail(soup: BeautifulSoup) -> str:
+    for label in PRICE_LABELS:
+        value = find_labeled_value(soup, (label,))
+        if value and _looks_like_money(value):
+            return _clean_spaces(value)
+    return "unknown"
+
+
+def extract_price_from_text(text: str) -> str:
+    match = re.search(r"[$€£¥]\s*[0-9.,]+(?:\s*(?:USD|EUR|GBP|CNY|RMB|AUD|CAD))?", text, re.I)
+    if match:
+        return _clean_spaces(match.group(0))
+    match = re.search(r"(?:USD|EUR|GBP|CNY|RMB|AUD|CAD)\s*[0-9.,]+", text, re.I)
+    if match:
+        return _clean_spaces(match.group(0))
+    return "unknown"
+
+
+def parse_size_to_mb(value: str) -> float | None:
+    return _parse_size_to_mb(value)
 
 
 def is_active_status(status: str) -> bool:
@@ -198,6 +231,8 @@ def _parse_services_from_table(soup: BeautifulSoup, base_url: str) -> list[Parse
             traffic_usage, traffic_remaining = _clean_traffic_values(
                 _value_by_header(headers, cells, ("traffic", "bandwidth", "data")) or "unknown"
             )
+            raw_price = _value_by_header(headers, cells, ("amount", "price", "cost", "billing", "recurring")) or "unknown"
+            price = raw_price if raw_price != "unknown" and _looks_like_money(raw_price) else "unknown"
             services.append(
                 ParsedService(
                     service_name=_service_name_from_cells(cells),
@@ -207,6 +242,7 @@ def _parse_services_from_table(soup: BeautifulSoup, base_url: str) -> list[Parse
                     ),
                     traffic_usage=traffic_usage,
                     traffic_remaining=traffic_remaining,
+                    price=price,
                     detail_url=_detail_url_from_row(row, base_url),
                 )
             )
@@ -229,6 +265,7 @@ def _parse_services_from_cards(soup: BeautifulSoup, base_url: str) -> list[Parse
                 expires_at=_extract_date(text) or "unknown",
                 traffic_usage="unknown",
                 traffic_remaining="unknown",
+                price="unknown",
                 detail_url=urljoin(base_url, href),
             )
         )
