@@ -9,6 +9,7 @@ from vps_dueguard.notifications import (
     ServiceCache,
     TelegramBot,
     TelegramError,
+    _split_message,
     build_renewal_alerts,
     build_traffic_alerts,
     calculate_traffic_percentage,
@@ -1470,3 +1471,32 @@ def test_bot_cost_command(monkeypatch) -> None:
 
     assert "VPS Cost Summary" in reply
     assert "$3.50 USD" in reply
+
+
+def test_split_message_short() -> None:
+    text = "Hello world"
+    assert _split_message(text) == ["Hello world"]
+
+
+def test_split_message_long() -> None:
+    lines = [f"Line {i}" for i in range(1000)]
+    text = "\n".join(lines)
+
+    parts = _split_message(text)
+
+    assert len(parts) > 1
+    for part in parts:
+        assert len(part) <= 4096
+    assert "\n".join(parts) == text
+
+
+def test_split_message_preserves_line_boundaries() -> None:
+    lines = [f"<b>Line {i}</b>" for i in range(500)]
+    text = "\n".join(lines)
+
+    parts = _split_message(text)
+
+    for part in parts:
+        assert len(part) <= 4096
+    reassembled = "\n".join(parts)
+    assert reassembled == text

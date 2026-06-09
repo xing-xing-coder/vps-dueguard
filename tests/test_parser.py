@@ -139,6 +139,27 @@ def test_parse_services_from_table_with_price_column() -> None:
     assert services[0].price == "$5.00 USD"
 
 
+def test_parse_services_price_cleans_extra_text() -> None:
+    html = """
+    <table>
+      <tr><th>Product/Service</th><th>Status</th><th>Next Due Date</th><th>Amount</th><th></th></tr>
+      <tr>
+        <td>Tokyo VPS 1G</td>
+        <td>Active</td>
+        <td>2026-12-31</td>
+        <td>$3.50 USD Monthly</td>
+        <td><a href="clientarea.php?action=productdetails&id=42">Manage</a></td>
+      </tr>
+    </table>
+    """
+
+    services = parse_services(html, "https://provider-a.example/")
+
+    assert len(services) == 1
+    assert services[0].price == "$3.50 USD"
+    assert "Monthly" not in services[0].price
+
+
 def test_extract_price_from_text() -> None:
     assert extract_price_from_text("$3.50 USD") == "$3.50 USD"
     assert extract_price_from_text("Price: €10.00") == "€10.00"

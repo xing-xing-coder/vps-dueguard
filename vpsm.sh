@@ -298,6 +298,7 @@ first_run_wizard() {
     if telegram_is_configured; then
         read_input "$(prompt enable_timers)" answer
         if is_yes "$answer"; then
+            ensure_traffic_timer
             systemctl enable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer vps-dueguard-traffic.timer || true
         fi
         read_input "$(prompt enable_bot)" answer
@@ -1249,6 +1250,7 @@ manage_services() {
             3) systemctl restart vps-dueguard-bot.service || true; pause "$(prompt bot_restarted)" ;;
             4) systemctl status vps-dueguard-bot.service --no-pager || true; pause ;;
             5)
+                ensure_traffic_timer
                 systemctl enable --now vps-dueguard-daily.timer vps-dueguard-renewals.timer vps-dueguard-traffic.timer || true
                 pause "$(prompt timers_enabled)"
                 ;;
@@ -1481,7 +1483,16 @@ set_traffic_alert_config() {
     local interval="${3:-6}"
     config_python set-traffic-alert "$enabled" "$threshold" "$interval"
     chmod 600 "$CONFIG_FILE"
+    ensure_traffic_timer
     regenerate_traffic_timer
+}
+
+ensure_traffic_timer() {
+    if [ -f "$TRAFFIC_TIMER" ]; then
+        return 0
+    fi
+    create_systemd_units
+    systemctl daemon-reload 2>/dev/null || true
 }
 
 regenerate_traffic_timer() {

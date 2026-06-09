@@ -165,6 +165,9 @@ def extract_price_from_detail(soup: BeautifulSoup) -> str:
     for label in PRICE_LABELS:
         value = find_labeled_value(soup, (label,))
         if value and _looks_like_money(value):
+            cleaned = extract_price_from_text(value)
+            if cleaned != "unknown":
+                return cleaned
             return _clean_spaces(value)
     return "unknown"
 
@@ -232,7 +235,7 @@ def _parse_services_from_table(soup: BeautifulSoup, base_url: str) -> list[Parse
                 _value_by_header(headers, cells, ("traffic", "bandwidth", "data")) or "unknown"
             )
             raw_price = _value_by_header(headers, cells, ("amount", "price", "cost", "billing", "recurring")) or "unknown"
-            price = raw_price if raw_price != "unknown" and _looks_like_money(raw_price) else "unknown"
+            price = extract_price_from_text(raw_price) if raw_price != "unknown" else "unknown"
             services.append(
                 ParsedService(
                     service_name=_service_name_from_cells(cells),

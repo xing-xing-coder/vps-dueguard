@@ -32,6 +32,9 @@ BOT_COMMANDS = [
 ]
 
 
+TELEGRAM_MAX_LENGTH = 4096
+
+
 class TelegramBot:
     def __init__(self, config: TelegramConfig, timeout: float = 45.0) -> None:
         self.config = config
@@ -48,22 +51,25 @@ class TelegramBot:
         self.close()
 
     def send_message(self, text: str, chat_id: str | None = None, reply_markup: dict[str, object] | None = None) -> None:
-        payload: dict[str, object] = {
-            "chat_id": chat_id or self.config.chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
-        response = self.client.post(
-            f"{self.base_url}/sendMessage",
-            json=payload,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise TelegramError(str(payload))
+        parts = _split_message(text)
+        for index, part in enumerate(parts):
+            is_last = index == len(parts) - 1
+            payload: dict[str, object] = {
+                "chat_id": chat_id or self.config.chat_id,
+                "text": part,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            if is_last and reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+            response = self.client.post(
+                f"{self.base_url}/sendMessage",
+                json=payload,
+            )
+            response.raise_for_status()
+            result = response.json()
+            if not result.get("ok"):
+                raise TelegramError(str(result))
 
     def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
         payload: dict[str, object] = {"callback_query_id": callback_query_id}
@@ -776,6 +782,34 @@ def _error_lines(errors: list[str] | None) -> list[str]:
 
 def _runtime_error(exc: Exception) -> str:
     return f"<b>Error:</b> {_html(exc)}"
+
+
+def _split_message(text: str) -> list[str]:
+    if len(text) <= TELEGRAM_MAX_LENGTH:
+        return [text]
+
+    parts: list[str] = []
+    current = ""
+
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) <= TELEGRAM_MAX_LENGTH:
+            current = candidate
+        else:
+            if current:
+                parts.append(current)
+            if len(line) <= TELEGRAM_MAX_LENGTH:
+                current = line
+            else:
+                while len(line) > TELEGRAM_MAX_LENGTH:
+                    parts.append(line[:TELEGRAM_MAX_LENGTH])
+                    line = line[TELEGRAM_MAX_LENGTH:]
+                current = line
+
+    if current:
+        parts.append(current)
+
+    return parts
 
 
 def _safe_answer_callback_query(bot: TelegramBot, callback_id: str, text: str | None = None) -> None:
