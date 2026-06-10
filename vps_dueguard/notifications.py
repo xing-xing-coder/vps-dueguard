@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ class TelegramError(RuntimeError):
 
 
 BOT_COMMANDS = [
+    ("start", "Start the bot and show menu"),
     ("summary", "All active VPS services"),
     ("traffic", "Traffic usage and remaining traffic"),
     ("renewals", "Renewal dates and days left"),
@@ -401,8 +403,7 @@ def format_cost_summary(services: list[ServiceInfo], errors: list[str] | None = 
     for svc in services:
         providers.setdefault(svc.provider, []).append(svc)
 
-    grand_total = 0.0
-    grand_currency = ""
+    currency_totals: dict[str, float] = {}
     has_any_price = False
 
     for provider_name, provider_services in sorted(providers.items()):
@@ -425,11 +426,12 @@ def format_cost_summary(services: list[ServiceInfo], errors: list[str] | None = 
 
         if provider_total > 0:
             lines.append(f"  <b>Subtotal: {_format_amount(provider_total, provider_currency)}</b>")
-            grand_total += provider_total
-            grand_currency = provider_currency
+            currency_totals[provider_currency] = currency_totals.get(provider_currency, 0.0) + provider_total
 
-    if grand_total > 0:
-        lines.extend(["", f"<b>Grand Total: {_format_amount(grand_total, grand_currency)}</b>"])
+    if currency_totals:
+        lines.append("")
+        for currency, total in sorted(currency_totals.items()):
+            lines.append(f"<b>Grand Total: {_format_amount(total, currency)}</b>")
     elif not has_any_price:
         lines.extend(["", "No price data available from providers."])
 
@@ -667,11 +669,17 @@ def run_bot(
         nonlocal runtime_config, config_mtime
         if config_path is None:
             return runtime_config
-        mtime = config_path.stat().st_mtime
+        try:
+            mtime = config_path.stat().st_mtime
+        except OSError:
+            return runtime_config
         if config_mtime != mtime:
-            runtime_config = load_config(config_path)
-            config_mtime = mtime
-            cache.clear()
+            try:
+                runtime_config = load_config(config_path)
+                config_mtime = mtime
+                cache.clear()
+            except (FileNotFoundError, ValueError, Exception):
+                pass
         return runtime_config
 
     with TelegramBot(telegram) as bot:
@@ -814,15 +822,36 @@ def _split_message(text: str) -> list[str]:
             if len(line) <= TELEGRAM_MAX_LENGTH:
                 current = line
             else:
-                while len(line) > TELEGRAM_MAX_LENGTH:
-                    parts.append(line[:TELEGRAM_MAX_LENGTH])
-                    line = line[TELEGRAM_MAX_LENGTH:]
-                current = line
+                current = _split_long_line(line, parts)
 
     if current:
         parts.append(current)
 
     return parts
+
+
+def _split_long_line(line: str, parts: list[str]) -> str:
+    while len(line) > TELEGRAM_MAX_LENGTH:
+        split_pos = _find_safe_split(line, TELEGRAM_MAX_LENGTH)
+        parts.append(line[:split_pos])
+        line = line[split_pos:]
+    return line
+
+
+def _find_safe_split(text: str, max_pos: int) -> int:
+    if max_pos >= len(text):
+        return len(text)
+
+    tag_start = text.rfind("<", 0, max_pos)
+    if tag_start != -1 and ">" not in text[tag_start:max_pos]:
+        return tag_start
+
+    for offset in range(0, min(50, max_pos)):
+        pos = max_pos - offset
+        if pos > 0 and text[pos - 1:pos + 1] in (" ", "><"):
+            return pos
+
+    return max_pos
 
 
 def _safe_answer_callback_query(bot: TelegramBot, callback_id: str, text: str | None = None) -> None:
@@ -860,5 +889,7 @@ def _load_state(path: Path) -> dict[str, object]:
 
 def _save_state(path: Path, state: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
+    temp_path = path.with_name(f".{path.name}.tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
         json.dump(state, handle, ensure_ascii=False, indent=2)
+    os.replace(temp_path, path)

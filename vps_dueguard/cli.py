@@ -219,10 +219,15 @@ def cost_summary(
                 if currency:
                     providers_costs[svc.provider]["currency"] = currency
 
-        grand_total = sum(float(p["total"]) for p in providers_costs.values())
+        currency_totals_json: dict[str, float] = {}
+        for p in providers_costs.values():
+            cur = p.get("currency", "")
+            if cur and float(p["total"]) > 0:
+                currency_totals_json[cur] = currency_totals_json.get(cur, 0.0) + float(p["total"])
+
         payload = {
             "providers": providers_costs,
-            "grand_total": grand_total,
+            "grand_total_by_currency": currency_totals_json,
             "errors": errors,
         }
         console.print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -238,8 +243,7 @@ def cost_summary(
         for svc in all_services:
             provider_groups.setdefault(svc.provider, []).append(svc)
 
-        grand_total = 0.0
-        grand_currency = ""
+        currency_totals: dict[str, float] = {}
 
         for provider_name, services in sorted(provider_groups.items()):
             provider_total = 0.0
@@ -252,11 +256,10 @@ def cost_summary(
                 table.add_row(svc.provider, svc.service_name, svc.price)
             if provider_total > 0:
                 table.add_row("", f"[bold]Subtotal[/bold]", f"[bold]{provider_total:.2f} {provider_currency}[/bold]")
-                grand_total += provider_total
-                grand_currency = provider_currency
+                currency_totals[provider_currency] = currency_totals.get(provider_currency, 0.0) + provider_total
 
-        if grand_total > 0:
-            table.add_row("", f"[bold]Grand Total[/bold]", f"[bold]{grand_total:.2f} {grand_currency}[/bold]")
+        for currency, total in sorted(currency_totals.items()):
+            table.add_row("", f"[bold]Grand Total[/bold]", f"[bold]{total:.2f} {currency}[/bold]")
 
         if all_services:
             console.print(table)

@@ -10,6 +10,7 @@ from vps_dueguard.menu_config import (
     current_traffic_alerts,
     dump_providers_yaml,
     load_menu_config,
+    mask_secret,
     normalize_renewal_days,
     repair_menu_config,
     set_renewal_days_config,
@@ -321,3 +322,32 @@ def test_set_traffic_alert_config_with_interval(tmp_path: Path) -> None:
     assert alerts["enabled"] is True
     assert alerts["threshold"] == 80
     assert alerts["check_interval_hours"] == 12
+
+
+def test_mask_secret() -> None:
+    assert mask_secret("") == ""
+    assert mask_secret("abc") == "***"
+    assert mask_secret("abcdef") == "ab**ef"
+    assert mask_secret("1234567890") == "12******90"
+
+
+def test_add_provider_rejects_duplicate_name(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    write_menu_config(config_file, "", "token", "123", "21,14")
+    data = load_menu_config(config_file)
+    add_provider_config(config_file, data, "provider-a", "https://a.example/", "user@a.com", "pass")
+    data = load_menu_config(config_file)
+
+    with pytest.raises(SystemExit, match="already exists"):
+        add_provider_config(config_file, data, "provider-a", "https://a2.example/", "user@a2.com", "pass2")
+
+
+def test_add_provider_rejects_duplicate_name_case_insensitive(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    write_menu_config(config_file, "", "token", "123", "21,14")
+    data = load_menu_config(config_file)
+    add_provider_config(config_file, data, "Provider-A", "https://a.example/", "user@a.com", "pass")
+    data = load_menu_config(config_file)
+
+    with pytest.raises(SystemExit, match="already exists"):
+        add_provider_config(config_file, data, "provider-a", "https://a2.example/", "user@a2.com", "pass2")

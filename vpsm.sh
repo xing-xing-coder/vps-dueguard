@@ -1575,6 +1575,15 @@ read_config_value() {
         telegram.chat_id)
             config_python get chat_id 2>/dev/null || true
             ;;
+        notifications.traffic_alerts.enabled)
+            config_python get traffic_alerts_enabled 2>/dev/null || true
+            ;;
+        notifications.traffic_alerts.threshold)
+            config_python get traffic_threshold 2>/dev/null || true
+            ;;
+        notifications.traffic_alerts.check_interval_hours)
+            config_python get traffic_interval 2>/dev/null || true
+            ;;
     esac
 }
 

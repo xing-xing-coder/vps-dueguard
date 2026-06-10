@@ -1501,3 +1501,43 @@ def test_split_message_preserves_line_boundaries() -> None:
         assert len(part) <= 4096
     reassembled = "\n".join(parts)
     assert reassembled == text
+
+
+def test_split_message_avoids_cutting_html_tags() -> None:
+    long_line = "<b>" + "x" * 4090 + "</b>"
+    parts = _split_message(long_line)
+
+    assert len(parts) >= 2
+    for part in parts:
+        assert len(part) <= 4096
+
+
+def test_format_cost_summary_multi_currency() -> None:
+    services = [
+        ServiceInfo(
+            provider="provider-a",
+            service_name="Tokyo VPS",
+            status="Active",
+            expires_at="2026-12-31",
+            traffic_usage="20 GB / 1 TB",
+            traffic_remaining="1004.00 GB",
+            price="$3.50 USD",
+            detail_url="https://example.com/1",
+        ),
+        ServiceInfo(
+            provider="provider-b",
+            service_name="Frankfurt VPS",
+            status="Active",
+            expires_at="2026-12-31",
+            traffic_usage="10 GB / 500 GB",
+            traffic_remaining="502.00 GB",
+            price="€5.00 EUR",
+            detail_url="https://example.com/2",
+        ),
+    ]
+
+    report = format_cost_summary(services)
+
+    assert "$3.50 USD" in report
+    assert "€5.00 EUR" in report
+    assert report.count("Grand Total") == 2

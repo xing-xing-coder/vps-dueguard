@@ -90,6 +90,14 @@ def normalize_renewal_days(value: Any) -> list[int]:
     return normalized or DEFAULT_RENEWAL_DAYS.copy()
 
 
+def mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "*" * len(value)
+    return value[:2] + "*" * (len(value) - 4) + value[-2:]
+
+
 def current_providers(data: dict[str, Any]) -> list[dict[str, str]]:
     providers = data.get("providers") or []
     if not isinstance(providers, list):
@@ -223,6 +231,9 @@ def add_provider_config(
     if not provider["name"]:
         raise SystemExit("provider name is required")
     providers = current_providers(data)
+    existing_names = {p["name"].lower() for p in providers}
+    if provider["name"].lower() in existing_names:
+        raise SystemExit(f"provider '{provider['name']}' already exists")
     providers.append(provider)
     telegram = current_telegram(data)
     save_menu_config(
@@ -303,7 +314,7 @@ def main() -> None:
             print(f"- {item['name']}")
             print(f"  URL: {item['base_url']}")
             print(f"  Username: {item['username']}")
-            print(f"  Password: {item['password']}")
+            print(f"  Password: {mask_secret(item['password'])}")
     elif args.action == "get":
         key = args.args[0]
         if key in {"bot_token", "chat_id"}:
